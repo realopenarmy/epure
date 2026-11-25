@@ -4,6 +4,8 @@
 
 ## Quick start
 
+New here? Read the [user guide](GUIDE.md).
+
 ```bash
 git clone https://github.com/realopenarmy/epure /workspace/epure && bash /workspace/epure/install.sh
 ```
