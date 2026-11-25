@@ -1,0 +1,61 @@
+{
+ "assembly_part_number": "EP-5000",
+ "exploded": true,
+ "items": [
+  {
+   "item": 1,
+   "name": "BASE PLATE",
+   "qty": 1,
+   "hardware": false,
+   "drawing": true,
+   "part_number": "EP-5000-01",
+   "description": "BASE PLATE",
+   "material": "6061-T6 ALUMINUM",
+   "finish": "CLEAR ANODIZE"
+  },
+  {
+   "item": 2,
+   "name": "SHAFT",
+   "qty": 1,
+   "hardware": false,
+   "drawing": true,
+   "part_number": "EP-5000-02",
+   "description": "SHAFT",
+   "material": "1045 STEEL",
+   "finish": "BLACK OXIDE"
+  },
+  {
+   "item": 3,
+   "name": "BRACKET",
+   "qty": 2,
+   "hardware": false,
+   "drawing": true,
+   "part_number": "EP-5000-03",
+   "description": "BRACKET",
+   "material": "6061-T6 ALUMINUM",
+   "finish": "CLEAR ANODIZE"
+  },
+  {
+   "item": 4,
+   "name": "HEX BOLT M6x30",
+   "qty": 4,
+   "hardware": true,
+   "drawing": false,
+   "part_number": "ISO 4017 M6x30",
+   "description": "HEX BOLT M6X30",
+   "material": "CLASS 8.8 STEEL",
+   "finish": "ZINC PLATED"
+  },
+  {
+   "item": 5,
+   "name": "HEX NUT M6",
+   "qty": 4,
+   "hardware": true,
+   "drawing": false,
+   "part_number": "ISO 4032 M6",
+   "description": "HEX NUT M6",
+   "material": "CLASS 8 STEEL",
+   "finish": "ZINC PLATED"
+  }
+ ]
+}

@@ -1,0 +1,2 @@
+{"company": "ACME FABRICATION", "units": "mm", "projection": "third", "drawn_by": "EPURE",
+ "tolerances": ["X.X ±0.1", "X.XX ±0.01", "X.XXX ±0.005", "ANGLES ±0.5°"]}

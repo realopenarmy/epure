@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Resolves the directory this wrapper lives in, so a clone works at
+# /workspace/epure or anywhere else.
+HERE="$(cd "$(dirname "$0")" && pwd)"
+exec "$HERE/venv/bin/python" "$HERE/epure.py" "$@"
