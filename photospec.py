@@ -18,7 +18,9 @@ The origin is the left-front-bottom corner; feature positions are measured from 
 l_bracket: base plate x 0..L, y 0..D, z 0..T; upright wall x 0..L, y 0..T, z 0..H at the front edge.
 
 Features (prismatic): hole, hole_pattern (rect), bolt_circle, slot, pocket, step, chamfer, fillet.
-Features (turned): bore, cross_hole, groove, chamfer, fillet.
+Bodies also: {"type": "revolve", "profile": [{"z": Z, "dia": D}, ...], "smooth": true} (spline; "corner" breaks it).
+Features (turned/revolve): bore, cross_hole, groove, tab, chamfer, fillet (by at= or z=). Segments may taper (dia_start/dia_end).
+Top-level "simplified": "..." prints SIMPLIFIED FROM PHOTOS - ... on the drawing (photo mark).
 """
 import json, math, os, sys
 
@@ -29,7 +31,8 @@ FACES = {   # face: (axis normal, coordinate of the face from the box, inward si
 }
 BRACKET_FACES = {'base': 'top', 'base_bottom': 'bottom', 'upright': 'back', 'upright_outside': 'front'}
 PRISMATIC = ('plate', 'block', 'l_bracket')
-DIAM_KEYS = ('dia', 'bc_dia', 'cbore_dia', 'csk_dia')
+DIAM_KEYS = ('dia', 'bc_dia', 'cbore_dia', 'csk_dia', 'dia_start', 'dia_end', 'hole_dia')
+NOT_SIZES = ('count', 'start_angle', 'csk_angle', 'nx', 'ny', 'nz')
 OUT_OF_SCOPE = ('freeform', 'organic', 'casting', 'sculpted', 'molded', 'forging')
 
 
@@ -73,7 +76,7 @@ class Ctx:
     def __init__(self, spec):
         u = spec.get('units', 'mm')
         if u not in ('mm', 'in'): raise SpecError(f'units must be mm or in, not {u!r}')
-        self.units, self.k, self.estimates = u, (25.4 if u == 'in' else 1.0), []
+        self.units, self.k, self.estimates, self.derived = u, (25.4 if u == 'in' else 1.0), [], []
 
     def num(self, obj, key, where, default=None, required=True):
         if key not in obj or obj[key] is None:
@@ -327,40 +330,148 @@ def build_prismatic(spec, c):
 
 
 # ------------------------------------------------------------------ turned
+def _turned_edges(solid, rad, total, ft, f, where, c):
+    """Circular outer edges picked by `at` (start|end|both|steps) or by `z` (a height along the axis)."""
+    if 'z' in f:
+        zs, mode = [c.num(f, 'z', where)], f.get('corner', 'outer')
+        if mode not in ('outer', 'inner'): raise SpecError(f'{where}: corner must be outer or inner')
+    else:
+        at = f.get('at', 'both')
+        if at not in ('start', 'end', 'both', 'steps'): raise SpecError(f'{where}: at must be start, end, both or steps (or give z)')
+        zs = {'start': [0.0], 'end': [total], 'both': [0.0, total], 'steps': [r_[1] for r_ in rad[:-1]]}[at]
+        # shoulders: a chamfer breaks the outer corner, a fillet rounds the inside corner
+        mode = ('outer' if ft == 'chamfer' else 'inner') if at == 'steps' else 'outer'
+    es = []
+    for e in solid.Edges():
+        if e.geomType() != 'CIRCLE': continue
+        cz = e.Center().z
+        if not any(abs(cz - z_) < 1e-4 for z_ in zs): continue
+        near = [r_[3] for r_ in rad if abs(r_[1] - cz) < 1e-4] + [r_[2] for r_ in rad if abs(r_[0] - cz) < 1e-4]
+        if not near: continue
+        want = max(near) if mode == 'outer' else min(near)
+        if abs(e.radius() - want) > 1e-4: continue
+        es.append(e)
+    if not es: raise SpecError(f'{where}: no matching edge there (check z or at)')
+    return es
+
+
+def _tab(cq, f, where, c, total, end):
+    """Flat tab with a round top and a hole through it (a keyring loop), standing on an end face."""
+    V = cq.Vector
+    w = c.num(f, 'width', where); t = c.num(f, 'thickness', where); h = c.num(f, 'height', where)
+    hd = c.num(f, 'hole_dia', where, required=False)
+    if h <= w / 2: raise SpecError(f'{where}: height must be more than half the width')
+    if hd is not None and hd >= w: raise SpecError(f'{where}: hole_dia must be smaller than width')
+    sink = 1.0                                          # overlap into the part so the tab fuses
+    tab = cq.Solid.makeBox(w, t, h - w / 2 + sink, V(-w / 2, -t / 2, -sink))
+    tab = tab.fuse(cq.Solid.makeCylinder(w / 2, t, V(0, -t / 2, h - w / 2), V(0, 1, 0)))
+    if hd: tab = tab.cut(cq.Solid.makeCylinder(hd / 2, t + 2, V(0, -t / 2 - 1, h - w / 2), V(0, 1, 0)))
+    if end == 'start': tab = tab.mirror('XY')
+    return tab.translate(V(0, 0, total if end == 'end' else 0.0)).clean()
+
+
+def _profile(spec, c):
+    """Half profile (r across, z up) on the XZ workplane, closed to the axis, ready to revolve about Z.
+    `turned`: straight steps, tapers (dia_start/dia_end), and arcs (`bulge`: + bows out, - bows in).
+    `revolve`: profile points [{"z", "dia"}, ...], straight between points or one smooth spline (`smooth`)."""
+    import cadquery as cq
+    b = spec['body']
+    if b['type'] == 'revolve':
+        pts = b.get('profile') or []
+        if len(pts) < 2: raise SpecError('body: a revolve needs "profile": at least 2 points [{"z": Z, "dia": D}, ...]')
+        P = [(c.num(p_, 'dia', f'body.profile[{i}]') / 2, c.num(p_, 'z', f'body.profile[{i}]')) for i, p_ in enumerate(pts)]
+        if abs(P[0][1]) > 1e-9: raise SpecError('body.profile: start the first point at z = 0 (the start end)')
+        if any(P[i + 1][1] <= P[i][1] for i in range(len(P) - 1)): raise SpecError('body.profile: z must go up from point to point')
+        if any(r_ <= 0 for r_, _ in P): raise SpecError('body.profile: every dia must be > 0')
+        smooth = bool(b.get('smooth', True))
+        wp = cq.Workplane('XZ').moveTo(0, 0).lineTo(*P[0])
+        if smooth and len(P) > 2:
+            # one smooth spline, broken at any point marked "corner": true (a crease, e.g. where two pieces meet)
+            cuts = [0] + [i for i, p_ in enumerate(pts) if p_.get('corner') and 0 < i < len(P) - 1] + [len(P) - 1]
+            for a_, b_ in zip(cuts, cuts[1:]):
+                part = P[a_:b_ + 1]
+                if len(part) > 2: _check_spline_inside(cq, part); wp = wp.spline(part[1:], includeCurrent=True)
+                else: wp = wp.lineTo(*part[-1])
+        else:
+            for p_ in P[1:]: wp = wp.lineTo(*p_)
+        wp = wp.lineTo(0, P[-1][1]).close()
+        rad = [(P[i][1], P[i + 1][1], P[i][0], P[i + 1][0]) for i in range(len(P) - 1)]
+        return wp, rad, P[-1][1]
+    segs = b.get('segments') or []
+    if not segs: raise SpecError('body: a turned part needs "segments": [{"dia": D, "length": L}, ...]')
+    z, rad = 0.0, []
+    wp = cq.Workplane('XZ').moveTo(0, 0)
+    cur = (0.0, 0.0)
+    for i, s in enumerate(segs):
+        w_ = f'body.segments[{i}]'
+        if 'dia' in s: d0 = d1 = c.num(s, 'dia', w_)
+        elif 'dia_start' in s or 'dia_end' in s: d0, d1 = c.num(s, 'dia_start', w_), c.num(s, 'dia_end', w_)   # a taper
+        else: raise SpecError(f'{w_}: give "dia", or "dia_start" and "dia_end" for a taper')
+        ln = c.num(s, 'length', w_)
+        if min(d0, d1) <= 0 or ln <= 0: raise SpecError(f'{w_}: diameters and length must be > 0')
+        bulge = c.num(s, 'bulge', w_, required=False) or 0.0
+        r0, r1 = d0 / 2, d1 / 2
+        if abs(cur[0] - r0) > 1e-9 or abs(cur[1] - z) > 1e-9: wp = wp.lineTo(r0, z)
+        if bulge:
+            rm = (r0 + r1) / 2 + bulge
+            if rm <= 0: raise SpecError(f'{w_}: bulge {bulge:g} cuts through the axis')
+            wp = wp.threePointArc((rm, z + ln / 2), (r1, z + ln))
+        else:
+            wp = wp.lineTo(r1, z + ln)
+        cur = (r1, z + ln)
+        rad.append((z, z + ln, r0, r1)); z += ln
+        if any(e['where'].startswith(f'body.segments[{j}].length') for j in range(i + 1) for e in c.estimates):
+            c.derived.append(z)            # a shoulder position that adds up estimated lengths is an estimate too
+    wp = wp.lineTo(0, z).close()
+    return wp, rad, z
+
+
+def _check_spline_inside(cq, P):
+    """A spline through the points must not swing through the axis."""
+    e = cq.Edge.makeSpline([cq.Vector(r_, 0, z_) for r_, z_ in P])
+    if any(e.positionAt(k / 60).x <= 1e-6 for k in range(61)):
+        raise SpecError('body.profile: the smooth curve dips through the axis; add a point or use "smooth": false')
+
+
+def is_curved(spec):
+    b = spec.get('body') or {}
+    if b.get('type') == 'revolve': return bool(b.get('smooth', True)) and len(b.get('profile') or []) > 2
+    return any(s_.get('bulge') for s_ in b.get('segments') or [] if isinstance(s_, dict))
+
+
+def stations(spec):
+    """Key profile stations (z mm, dia mm, estimated?) to dimension on a curved part, start to end."""
+    if not is_curved(spec): return []
+    c = Ctx(spec); b = spec['body']; out = []
+    isest = lambda v: isinstance(v, dict) and bool(v.get('est') or v.get('estimate'))
+    if b['type'] == 'revolve':
+        for i, p_ in enumerate(b['profile']):
+            out.append((c.num(p_, 'z', 'p'), c.num(p_, 'dia', 'p'), isest(p_['z']) or isest(p_['dia'])))
+        return out
+    z = 0.0
+    for s_ in b['segments']:
+        d0 = c.num(s_, 'dia', 's') if 'dia' in s_ else c.num(s_, 'dia_start', 's')
+        d1 = c.num(s_, 'dia', 's') if 'dia' in s_ else c.num(s_, 'dia_end', 's')
+        ln = c.num(s_, 'length', 's'); e_ = any(isest(v) for v in s_.values())
+        if not out or abs(out[-1][0] - z) > 1e-6: out.append((z, d0, e_))
+        bu = c.num(s_, 'bulge', 's', required=False)
+        if bu: out.append((z + ln / 2, d0 / 2 + d1 / 2 + 2 * bu, e_))
+        z += ln
+        out.append((z, d1, e_))
+    return out
+
+
 def build_turned(spec, c):
     import cadquery as cq
     V = cq.Vector
-    segs = spec['body'].get('segments') or []
-    if not segs: raise SpecError('body: a turned part needs "segments": [{"dia": D, "length": L}, ...]')
-    solid, z, rad = None, 0.0, []
-    for i, s in enumerate(segs):
-        d = c.num(s, 'dia', f'body.segments[{i}]'); ln = c.num(s, 'length', f'body.segments[{i}]')
-        if d <= 0 or ln <= 0: raise SpecError(f'body.segments[{i}]: dia and length must be > 0')
-        cyl = cq.Solid.makeCylinder(d / 2, ln, V(0, 0, z), V(0, 0, 1))
-        solid = cyl if solid is None else solid.fuse(cyl)
-        rad.append((z, z + ln, d / 2)); z += ln
-    solid = solid.clean()
-    total = z
+    wp, rad, total = _profile(spec, c)
+    solid = wp.revolve(360, (0, 0, 0), (0, 1, 0)).val().clean()
+    rmax = max(bbox(solid).xmax, max(max(r_[2], r_[3]) for r_ in rad))
     feats = spec.get('features', [])
-    for i, f in enumerate(feats):     # end chamfers / fillets on outer circular edges first
+    for i, f in enumerate(feats):     # chamfers / fillets on outer circular edges first
         ft = f.get('type'); where = f'features[{i}]({ft})'
         if ft not in ('chamfer', 'fillet'): continue
-        at = f.get('at', 'both')
-        if at not in ('start', 'end', 'both', 'steps'): raise SpecError(f'{where}: at must be start, end, both or steps')
-        zs = {'start': [0.0], 'end': [total], 'both': [0.0, total], 'steps': [r_[1] for r_ in rad[:-1]]}[at]
-        es = []
-        for e in solid.Edges():
-            if e.geomType() != 'CIRCLE': continue
-            cz = e.Center().z
-            if not any(abs(cz - z_) < 1e-4 for z_ in zs): continue
-            if at == 'steps':   # shoulders: a chamfer breaks the outer corner, a fillet rounds the inside corner
-                near = [r_[2] for r_ in rad if abs(r_[0] - cz) < 1e-4 or abs(r_[1] - cz) < 1e-4]
-                want = max(near) if ft == 'chamfer' else min(near)
-                if abs(e.radius() - want) > 1e-4: continue
-            elif abs(e.radius() - max(r_[2] for r_ in rad if r_[0] - 1e-4 <= cz <= r_[1] + 1e-4)) > 1e-4:
-                continue
-            es.append(e)
-        if not es: raise SpecError(f'{where}: no matching edges at {at}')
+        es = _turned_edges(solid, rad, total, ft, f, where, c)
         size = c.num(f, 'size' if ft == 'chamfer' else 'radius', where)
         try:
             solid = solid.chamfer(size, None, es) if ft == 'chamfer' else solid.fillet(size, es)
@@ -381,16 +492,21 @@ def build_turned(spec, c):
             r = c.num(f, 'dia', where) / 2; zc = c.num(f, 'z', where)
             dr = f.get('direction', 'x')
             if dr not in ('x', 'y'): raise SpecError(f'{where}: direction must be x or y')
-            R = max(r_[2] for r_ in rad) + 1
+            R = rmax + 1
             d = V(1, 0, 0) if dr == 'x' else V(0, 1, 0)
             solid = solid.cut(cq.Solid.makeCylinder(r, 2 * R, V(0, 0, zc) - d * R, d))
         elif ft == 'groove':
             zc = c.num(f, 'z', where); w = c.num(f, 'width', where); gd = c.num(f, 'dia', where) / 2
-            R = max(r_[2] for r_ in rad) + 1
+            R = rmax + 1
             ring = cq.Solid.makeCylinder(R, w, V(0, 0, zc), V(0, 0, 1)).cut(cq.Solid.makeCylinder(gd, w, V(0, 0, zc), V(0, 0, 1)))
             solid = solid.cut(ring)
+        elif ft == 'tab':
+            end = f.get('at', 'end')
+            if end not in ('start', 'end'): raise SpecError(f'{where}: at must be start or end')
+            solid = solid.fuse(_tab(cq, f, where, c, total, end)).clean()
+            if c.estimates: c.derived.append(total + c.num(f, 'height', where))
         else:
-            raise SpecError(f'{where}: unknown feature type for a turned part (use bore, cross_hole, groove, chamfer, fillet)')
+            raise SpecError(f'{where}: unknown feature type for a turned part (use bore, cross_hole, groove, tab, chamfer, fillet)')
     return solid
 
 
@@ -400,11 +516,12 @@ def build(spec):
     if not isinstance(spec, dict) or 'body' not in spec: raise SpecError('spec needs a "body"')
     t = (spec['body'] or {}).get('type', '')
     if t in OUT_OF_SCOPE or spec['body'].get('out_of_scope'):
-        raise SpecError(f'{t or "this part"} is out of scope for photo mode: it needs a real CAD model or a 3D scan')
+        raise SpecError(f'{t or "this part"} has no simple main form to model. I can draw its envelope (a bounding box or '
+                        'cylinder, as a plate/block or one-segment turned body), and a STEP file or 3D scan gives the real shape')
     c = Ctx(spec)
     if t in PRISMATIC: solid = build_prismatic(spec, c)
-    elif t == 'turned': solid = build_turned(spec, c)
-    else: raise SpecError(f'body.type must be plate, block, l_bracket or turned, not {t!r}')
+    elif t in ('turned', 'revolve'): solid = build_turned(spec, c)
+    else: raise SpecError(f'body.type must be plate, block, l_bracket, turned or revolve, not {t!r}')
     solid = solid.clean()
     if not solid.isValid(): raise SpecError('the built solid is not valid; check that features stay inside the part')
     n = len(solid.Solids()) if hasattr(solid, 'Solids') else 1
@@ -413,14 +530,33 @@ def build(spec):
     seen, est = set(), []
     for e in c.estimates:
         if e['where'] not in seen: seen.add(e['where']); est.append(e)
+    for z_ in sorted(set(round(v, 6) for v in c.derived)):
+        est.append({'where': f'derived: position {z_ / c.k:g} {c.units} from the start end', 'value': z_ / c.k,
+                    'units': c.units, 'mm': z_, 'kind': 'length', 'derived': True})
     return solid, est
+
+
+def all_estimated(spec):
+    """True when every size in the spec is an estimate (nothing measured yet), so every dimension is ≈."""
+    n = {'plain': 0, 'est': 0}
+    def walk(o, key=None):
+        if isinstance(o, dict):
+            if 'value' in o and (o.get('est') or o.get('estimate')): n['est'] += 1; return
+            for k_, v_ in o.items(): walk(v_, k_)
+        elif isinstance(o, list):
+            for v_ in o: walk(v_, key)
+        elif isinstance(o, (int, float)) and not isinstance(o, bool) and key not in NOT_SIZES and o != 0:
+            n['plain'] += 1                             # a 0 is the datum (e.g. the first profile point), not a size
+    walk(spec.get('body', {})); walk(spec.get('features', []))
+    return n['est'] > 0 and n['plain'] == 0
 
 
 def preview_png(solid, path, title='', size=(900, 680)):
     """Shaded iso render (small z-buffer rasteriser, no GL needed) for the person to confirm the shape."""
     import numpy as np
     from PIL import Image, ImageDraw, ImageFilter
-    verts, tris = solid.tessellate(0.02, 0.15)
+    bb0 = bbox(solid); size_ = max(bb0.xlen, bb0.ylen, bb0.zlen)
+    verts, tris = solid.tessellate(max(0.01, size_ * 2e-4), 0.08)
     P = np.array([(v.x, v.y, v.z) for v in verts], float); T = np.array(tris, int)
     # iso camera from front-right-top, like the drawing's iso view
     fwd = np.array([1.0, -1.0, 1.0]) / math.sqrt(3)          # towards the camera
@@ -493,15 +629,56 @@ def cmd_build(spec_path, out):
     bb = bbox(solid)
     res = {'ok': True, 'step': step, 'model_preview': png,
            'size_mm': [round(bb.xlen, 3), round(bb.ylen, 3), round(bb.zlen, 3)],
-           'volume_mm3': round(solid.Volume(), 1), 'estimates': est, 'spec': os.path.abspath(spec_path)}
+           'volume_mm3': round(solid.Volume(), 1), 'estimates': est, 'all_estimated': all_estimated(spec),
+           'simplified_note': simplified_note(spec['simplified']) if spec.get('simplified') else None,
+           'spec': os.path.abspath(spec_path)}
     with open(os.path.join(out, 'build.json'), 'w') as f: json.dump(res, f, indent=1, ensure_ascii=False)
     return res
 
 
 ESTIMATE_NOTE = 'DIMENSIONS MARKED ≈ ARE ESTIMATED FROM PHOTOS - VERIFY BEFORE MACHINING'
+SIMPLIFIED_PREFIX = 'SIMPLIFIED FROM PHOTOS'
+CURVES_NOTE = 'CURVES ESTIMATED FROM PHOTOS - PROFILE APPROXIMATE'
 
 
-def mark(E, d, est, tol=0.02):
+def simplified_note(text):
+    """Drawing note for a simplified model; `text` says what is left out, e.g. 'LETTERING AND RIBS NOT SHOWN'."""
+    t = str(text).strip().upper()
+    if t.startswith(SIMPLIFIED_PREFIX): return t
+    return f'{SIMPLIFIED_PREFIX} - {t}' if t else SIMPLIFIED_PREFIX
+
+
+def _closest_on(shape, xyz):
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
+    from OCP.gp import gp_Pnt
+    v = BRepBuilderAPI_MakeVertex(gp_Pnt(*xyz)).Vertex()
+    d = BRepExtrema_DistShapeShape(shape.wrapped, v); d.Perform()
+    p = d.PointOnShape1(1)
+    return (p.X(), p.Y(), p.Z())
+
+
+def fillet_leaders(spec, solid, c=None):
+    """Turned fillets placed by `z` (e.g. a rounded bottle shoulder) that blend a cylinder into a taper.
+    The drawing engine only calls out fillets between square faces, so photo mark adds a leader for these.
+    Returns [(point_mm (x, 0, z), radius_mm, is_estimate)]."""
+    if spec.get('body', {}).get('type') not in ('turned', 'revolve'): return []
+    c = c or Ctx(spec)
+    out = []
+    tori = [f for f in solid.Faces() if f.geomType() in ('TORUS', 'BSPLINE')]   # cylinder-to-cone blends come out as B-splines
+    for i, f in enumerate(spec.get('features', [])):
+        if f.get('type') != 'fillet' or 'z' not in f: continue
+        z = c.num(f, 'z', 'x'); r = c.num(f, 'radius', 'x')
+        est = isinstance(f['radius'], dict) and bool(f['radius'].get('est') or f['radius'].get('estimate'))
+        for t in tori:
+            bb = t.BoundingBox()
+            if bb.zmin - 1e-3 <= z <= bb.zmax + 1e-3 and bb.zlen <= 2 * r + 1e-3:
+                p_ = _closest_on(t, (bb.xmax + 50, 0.0, (bb.zmin + bb.zmax) / 2))   # mid-height of the blend, +x side
+                out.append(((round(math.hypot(p_[0], p_[1]), 4), 0.0, round(p_[2], 4)), r, est)); break
+    return out
+
+
+def mark(E, d, est, tol=0.02, simplified=None, mark_all=False, leaders=(), curved=False, stations_=()):
     """Prefix ≈ on every dimension of the drawing in d whose value matches an unconfirmed estimate.
     Conservative: a confirmed dimension with the same value is marked too. E is the epure module."""
     spec = E.read_spec(d)
@@ -515,8 +692,9 @@ def mark(E, d, est, tol=0.02):
         t = dm.get('text') or ''
         if '≈' in t: continue
         f = feats.get(dm.get('feature'))
-        match = False
-        if dm['kind'] == 'linear':
+        match = mark_all and bool(est)
+        if match: pass
+        elif dm['kind'] == 'linear':
             try:
                 v = abs(E.ref_value(spec, dm['b'], dm['axis']) - E.ref_value(spec, dm['a'], dm['axis']))
                 match = hit(v, lens) or hit(v, dias)
@@ -528,18 +706,47 @@ def mark(E, d, est, tol=0.02):
             match = hit(f['dia'], dias)
         elif f is not None and f.get('r') is not None:
             match = hit(f['r'], rads)
-        if dm.get('bc'):
+        elif f is not None and f.get('type') == 'chamfer' and f.get('legs'):
+            match = hit(f['legs'][0], lens)
+        if dm.get('bc') and not match:
             bc = next((x for x in spec['features'].get('bolt_circles', []) if x['id'] == dm['bc']), None)
             if bc and hit(bc['dia'], dias): match = True
         if match:
             base = t or ('%%c<>' if dm['kind'] in ('hole', 'diameter') else '<>')
             dm['text'] = '≈' + base
             marked.append(dm['id'])
-    if est and ESTIMATE_NOTE not in spec['notes']: spec['notes'].append(ESTIMATE_NOTE)
-    if not est and ESTIMATE_NOTE in spec['notes']: spec['notes'].remove(ESTIMATE_NOTE)
+    import geom
+    spec['dims'] = [dm for dm in spec['dims'] if not dm.get('photo')]
+    have = [f['r'] for f in spec['features'].get('fillets', [])]
+    for pt, r, e_ in leaders:
+        if any(abs(r - h) <= tol for h in have): continue        # the engine already calls it out
+        txt = ('≈' if e_ or mark_all else '') + 'R' + E.fmt(spec, r)
+        dm = {'id': E.next_id(spec['dims'], 'D'), 'kind': 'leader', 'view': 'front', 'text': txt, 'angle': 30,
+              'dist': 8, 'auto': False, 'photo': True, 'point': list(geom.project(pt, 'front'))}
+        spec['dims'].append(dm); marked.append(dm['id'])
+    if stations_:                                       # curved profile: diameters across at key stations + their heights
+        zs = [z_ for z_, _, _ in stations_]; z0, z1 = min(zs), max(zs); inset = 0.01 * (z1 - z0)
+        off = 10.0
+        for z_, dia, e_ in stations_:
+            at = min(max(z_, z0 + inset), z1 - inset)          # just inside the end faces
+            pre = '≈' if (e_ or mark_all) else ''
+            dm = {'id': E.next_id(spec['dims'], 'D'), 'kind': 'linear', 'view': 'front', 'axis': 'x', 'a': -dia / 2,
+                  'b': dia / 2, 'side': 'inside', 'at': at, 'text': pre + '%%c<>', 'auto': False, 'photo': True}
+            spec['dims'].append(dm); marked.append(dm['id'])
+            if z0 + 1e-6 < z_ < z1 - 1e-6:
+                dm = {'id': E.next_id(spec['dims'], 'D'), 'kind': 'linear', 'view': 'right', 'axis': 'z', 'a': z0, 'b': z_,
+                      'side': 'left', 'offset': off, 'text': pre + '<>', 'auto': False, 'photo': True}
+                off += 7.0
+                spec['dims'].append(dm); marked.append(dm['id'])
+    # photo-mode notes are rebuilt every run, always in the same order
+    spec['notes'] = [n for n in spec['notes'] if n not in (ESTIMATE_NOTE, CURVES_NOTE) and not n.startswith(SIMPLIFIED_PREFIX)]
+    if est: spec['notes'].append(ESTIMATE_NOTE)
+    if curved: spec['notes'].append(CURVES_NOTE)
+    if simplified: spec['notes'].append(simplified_note(simplified))
     spec = E.render(spec, d)
     return {'ok': True, 'dir': d, 'marked': marked, 'estimates': len(est),
-            'note': ESTIMATE_NOTE if est else None, 'preview': os.path.join(d, 'preview.png'),
+            'note': ESTIMATE_NOTE if est else None, 'simplified_note': simplified_note(simplified) if simplified else None,
+            'curves_note': CURVES_NOTE if curved else None, 'preview': os.path.join(d, 'preview.png'),
             'audit_errors': spec['resolved']['audit_errors']}
 
 
@@ -563,13 +770,17 @@ def main(argv, E=None):
             res = cmd_build(a.spec, os.path.abspath(a.out))
         elif a.op == 'check':
             spec = load(a.spec); _, est = build(spec)
-            res = {'ok': True, 'estimates': est, 'ready_for_final': not est}
+            res = {'ok': True, 'estimates': est, 'ready_for_final': not est,
+                   'simplified_note': simplified_note(spec['simplified']) if spec.get('simplified') else None}
         elif a.op == 'scale':
             vals = [round(scale_estimate(a.ref_px, p_, a.ref, a.ref_mm), 2) for p_ in a.px]
             res = {'ok': True, 'estimates_mm': vals, 'reference_mm': a.ref_mm or REFERENCES.get(a.ref),
                    'note': 'estimates only: valid if the reference is on the same plane and the shot is straight on'}
         else:
-            res = mark(E, os.path.abspath(a.dir), estimates(load(a.spec)))
+            sp_ = load(a.spec)
+            solid, est = build(sp_)
+            res = mark(E, os.path.abspath(a.dir), est, simplified=sp_.get('simplified'), mark_all=all_estimated(sp_),
+                       leaders=fillet_leaders(sp_, solid), curved=is_curved(sp_), stations_=stations(sp_))
     except SpecError as e:
         print(json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False)); sys.exit(2)
     print(json.dumps(res, indent=1, ensure_ascii=False))

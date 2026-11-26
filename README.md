@@ -208,7 +208,8 @@ Errors print `{"ok": false, "error": "..."}` with exit 2. JSON or YAML (`.yaml`/
 Bodies (units `mm` or `in`; origin at the left-front-bottom corner, x left to right, y front to back, z up):
 - `plate` / `block`: `length` (x), `width` (y), `thickness` (z).
 - `l_bracket`: base `length` x `base` x `thickness` on z=0, upright wall `thickness` x `height` along the front edge (y=0); `bend_radius` (inside radius, optional) makes a formed bend, outside radius = bend_radius + thickness.
-- `turned`: `segments` [{`dia`, `length`}, ...] stacked along +z from z=0 (the start end).
+- `revolve`: `profile` [{`z`, `dia`}, ...] from z=0 upward, `smooth` (default true) = one spline through the points; `"corner": true` on a point breaks the spline there (a crease); `smooth: false` = straight lines. Features as for `turned`.
+- `turned`: `segments` [{`dia`, `length`} or {`dia_start`, `dia_end`, `length`} for a taper, optional `bulge` (mm at mid-length, + bows out, - bows in) for an arc side, ...] stacked along +z from z=0 (the start end); the profile is revolved, so bottles, knobs and caps work.
 
 Prismatic features. `face`: top, bottom, front, back, left, right (plate/block; default top) or base, base_bottom, upright, upright_outside (bracket; default base). Positions use the face's two global axes (top/bottom: x,y; front/back and bracket upright: x,z; left/right: y,z). `depth` is a number or `"thru"` (default).
 | type | keys |
@@ -221,9 +222,11 @@ Prismatic features. `face`: top, bottom, front, back, left, right (plate/block; 
 | `step` | full-width rebate: `edge` (`+x`, `-x`, `+y`, ... in face axes), `size` (how far in), `depth` |
 | `fillet` / `chamfer` | `edges`: vertical (outer corners), top, bottom, all; `radius` / `size`. Applied to the plain body before cuts |
 
-Turned features: `bore` (`dia`, `depth` or `"thru"`, `from` start|end), `cross_hole` (`z`, `dia`, `direction` x|y, goes right through), `groove` (`z` start, `width`, `dia` at the bottom), `chamfer` / `fillet` (`at` start|end|both|steps, `size` / `radius`; at steps a chamfer breaks each shoulder's outer corner and a fillet rounds its inside corner).
+Turned features: `bore` (`dia`, `depth` or `"thru"`, `from` start|end), `cross_hole` (`z`, `dia`, `direction` x|y, goes right through), `groove` (`z` start, `width`, `dia` at the bottom), `tab` (`at` start|end, `width`, `thickness`, `height` above the end face, optional `hole_dia`: a flat tab with a round top, e.g. a keyring loop), `chamfer` / `fillet` (`at` start|end|both|steps, or `z` for one height with `corner` outer (default)|inner; `size` / `radius`; at steps a chamfer breaks each shoulder's outer corner and a fillet rounds its inside corner). A fillet by `z` between a cylinder and a taper (a rounded shoulder) is not recognised by `make`; `photo mark` adds its R leader.
 
-Body types `freeform`, `organic`, `casting`, `sculpted`, `molded`, `forging` (or `"out_of_scope": true`) are refused with an out-of-scope message. Features that split the part, an invalid solid, or a fillet too big for its wall are refused with a plain error. Tests: `venv/bin/python -m unittest discover -s tests -v`.
+Top-level `"simplified": "LETTERING AND RIBS NOT SHOWN"` makes `photo mark` print "SIMPLIFIED FROM PHOTOS - LETTERING AND RIBS NOT SHOWN". When every size in the spec is an estimate, `photo mark` puts ≈ on every dimension; otherwise on dims matching an estimate, including shoulder positions that add up estimated lengths. On a curved profile (smooth `revolve` or any `bulge`), `photo mark` also adds "CURVES ESTIMATED FROM PHOTOS - PROFILE APPROXIMATE", a diameter across the front view at every profile station, and the station heights on the right view (drop the iso view first with `edit DIR del-view iso`). Examples: `samples/photo_bottle.json`, `samples/photo_stool.json`.
+
+Body types `freeform`, `organic`, `casting`, `sculpted`, `molded`, `forging` (or `"out_of_scope": true`) are refused with a message that offers the envelope (a block or one-segment turned body) instead. Features that split the part, an invalid solid, or a fillet too big for its wall are refused with a plain error. Tests: `venv/bin/python -m unittest discover -s tests -v`.
 
 ## JSON output (make / edit / render)
 `audit_errors`, `dim_errors`, `skipped` (callouts left off, with reason), `warnings` (feature + dim warnings, e.g. uneven hole circle), `thread_suggestions` (pending `text` lines for the user), `threads` (accepted), `gdt_suggestions` (pending, `G#: [frame] on target - reason`), `gdt` (accepted datums and frames), plus the feature lists (`holes cyls slots fillets chamfers bolt_circles slopes`).

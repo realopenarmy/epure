@@ -154,6 +154,142 @@ class Turned(unittest.TestCase):
         self.assertAlmostEqual(s.Volume(), PI * 100 * 50 - PI * 16 * 12, places=2)
 
 
+BOTTLE = os.path.join(HERE, 'samples', 'photo_bottle.json')
+
+
+class Bottle(unittest.TestCase):
+    """Tapers, a rounded shoulder by z, a keyring tab, and the simplified note."""
+    def test_taper_is_a_frustum(self):
+        s, _ = ps.build({'body': {'type': 'turned', 'segments': [{'dia_start': 30, 'dia_end': 20, 'length': 12}]}})
+        self.assertAlmostEqual(s.Volume(), PI * 12 / 3 * (15 ** 2 + 15 * 10 + 10 ** 2), places=2)
+        self.assertEqual(len(s.Solids()), 1)
+
+    def test_taper_needs_both_ends(self):
+        with self.assertRaises(ps.SpecError):
+            ps.build({'body': {'type': 'turned', 'segments': [{'dia_start': 30, 'length': 12}]}})
+
+    def test_shoulder_fillet_by_z_adds_a_blend_and_leader(self):
+        body = {'type': 'turned', 'segments': [{'dia': 31, 'length': 48}, {'dia_start': 31, 'dia_end': 23, 'length': 12}]}
+        plain, _ = ps.build({'body': body})
+        spec = {'body': body, 'features': [{'type': 'fillet', 'z': 48, 'radius': 8}]}
+        s, _ = ps.build(spec)
+        self.assertLess(s.Volume(), plain.Volume())       # rounding a convex shoulder removes material
+        self.assertAlmostEqual(ps.bbox(s).zlen, 60, places=4)
+        (pt, r, est), = ps.fillet_leaders(spec, s)
+        self.assertEqual((r, est), (8, False)); self.assertTrue(40 < pt[2] < 56 and 14 < pt[0] < 15.5)
+
+    def test_tab_with_hole(self):
+        spec = {'body': {'type': 'turned', 'segments': [{'dia': 19, 'length': 10}]},
+                'features': [{'type': 'tab', 'width': 8, 'thickness': 3, 'height': 7, 'hole_dia': 3}]}
+        s, _ = ps.build(spec)
+        self.assertAlmostEqual(ps.bbox(s).zlen, 17, places=4)
+        tab = 8 * 3 * 3 + PI * 16 / 2 * 3 - PI * 1.5 ** 2 * 3   # 3 mm of box above the end + half disc - hole
+        self.assertAlmostEqual(s.Volume(), PI * 9.5 ** 2 * 10 + tab, places=1)
+        self.assertTrue(any(h['axis'] == 'y' and abs(h['dia'] - 3) < 1e-6 for h in feats(s)['holes']))
+        with self.assertRaises(ps.SpecError):
+            ps.build({'body': spec['body'], 'features': [{'type': 'tab', 'width': 8, 'thickness': 3, 'height': 3}]})
+
+    def test_sample_bottle_all_estimated(self):
+        spec = ps.load(BOTTLE)
+        s, est = ps.build(spec)
+        bb = ps.bbox(s)
+        self.assertEqual((round(bb.xlen, 3), round(bb.zlen, 3)), (31.0, 80.0))
+        self.assertTrue(ps.all_estimated(spec))
+        self.assertIn(80.0, [e['mm'] for e in est if e.get('derived')])     # overall height adds up estimates
+        self.assertEqual(ps.simplified_note(spec['simplified']), 'SIMPLIFIED FROM PHOTOS - LETTERING, LOGO AND RIBS NOT SHOWN')
+        self.assertFalse(ps.all_estimated(plate([{'type': 'hole', 'x': 1, 'y': 1, 'dia': {'value': 3, 'est': True}}])))
+
+    def test_bottle_cli_drawing(self):
+        E = os.path.join(HERE, 'epure')
+        run = lambda *a: json.loads(subprocess.run([E, *a], check=True, capture_output=True, text=True).stdout)
+        with tempfile.TemporaryDirectory() as t:
+            b = run('photo', 'build', BOTTLE, '--out', os.path.join(t, 'model'))
+            self.assertTrue(b['all_estimated']); self.assertTrue(b['simplified_note'])
+            m = run('make', b['step'], '--out', os.path.join(t, 'drw'))
+            self.assertEqual(m['audit_errors'], 0)
+            k = run('photo', 'mark', os.path.join(t, 'drw'), '--spec', BOTTLE)
+            k2 = run('photo', 'mark', os.path.join(t, 'drw'), '--spec', BOTTLE)          # idempotent
+            self.assertEqual(k2['audit_errors'], 0)
+            with open(os.path.join(t, 'drw', 'spec.json')) as f: sp = json.load(f)
+            self.assertTrue(all('≈' in (d.get('text') or '') for d in sp['dims']))
+            self.assertEqual(sum(1 for d in sp['dims'] if d.get('photo')), 1)        # the R8 shoulder leader, once
+            self.assertEqual([n for n in sp['notes'] if n.startswith('SIMPLIFIED')], [k['simplified_note']])
+            self.assertEqual(sum(1 for n in sp['notes'] if 'ESTIMATED' in n), 1)
+
+
+STOOL = os.path.join(HERE, 'samples', 'photo_stool.json')
+
+
+def radius_at(solid, z):
+    """Outer radius of a revolved solid at height z (from a thin slice)."""
+    import cadquery as cq
+    sl = solid.intersect(cq.Solid.makeBox(1e4, 1e4, 0.002, cq.Vector(-5e3, -5e3, z - 0.001)))
+    return ps.bbox(sl).xmax
+
+
+class Curves(unittest.TestCase):
+    """Curved revolved profiles: arcs (bulge), straight revolve points, and smooth splines."""
+    def test_revolve_straight_points_is_a_frustum(self):
+        s, _ = ps.build({'body': {'type': 'revolve', 'smooth': False,
+                                  'profile': [{'z': 0, 'dia': 30}, {'z': 12, 'dia': 20}]}})
+        self.assertAlmostEqual(s.Volume(), PI * 12 / 3 * (15 ** 2 + 150 + 10 ** 2), places=2)
+
+    def test_spline_passes_through_the_stations(self):
+        prof = [{'z': 0, 'dia': 60}, {'z': 30, 'dia': 80}, {'z': 70, 'dia': 40}, {'z': 100, 'dia': 70}]
+        s, _ = ps.build({'body': {'type': 'revolve', 'profile': prof}})
+        for p_ in prof[1:-1]:
+            self.assertAlmostEqual(radius_at(s, p_['z']), p_['dia'] / 2, delta=0.05)
+        self.assertAlmostEqual(ps.bbox(s).zlen, 100, places=3)
+
+    def test_corner_breaks_the_spline(self):
+        prof = [{'z': 0, 'dia': 200}, {'z': 65, 'dia': 255}, {'z': 190, 'dia': 95, 'corner': True},
+                {'z': 330, 'dia': 250}, {'z': 420, 'dia': 290}]
+        s, _ = ps.build({'body': {'type': 'revolve', 'profile': prof}})
+        self.assertAlmostEqual(radius_at(s, 190), 47.5, delta=0.05)
+        self.assertEqual(len(s.Solids()), 1)
+        self.assertTrue(any(e.geomType() == 'CIRCLE' and abs(e.Center().z - 190) < 1e-3 for e in s.Edges()))
+
+    def test_bulge_arc_convex_and_concave(self):
+        seg = lambda b: {'body': {'type': 'turned', 'segments': [{'dia': 40, 'length': 40, 'bulge': b}]}}
+        cyl = PI * 20 ** 2 * 40
+        out, _ = ps.build(seg(5)); inn, _ = ps.build(seg(-5))
+        self.assertAlmostEqual(radius_at(out, 20), 25, places=3); self.assertAlmostEqual(radius_at(inn, 20), 15, places=3)
+        self.assertGreater(out.Volume(), cyl); self.assertLess(inn.Volume(), cyl)
+        with self.assertRaises(ps.SpecError): ps.build(seg(-25))
+
+    def test_profile_errors(self):
+        bad = lambda prof, msg: self.assertRaisesRegex(ps.SpecError, msg, ps.build, {'body': {'type': 'revolve', 'profile': prof}})
+        bad([{'z': 0, 'dia': 10}], 'at least 2')
+        bad([{'z': 5, 'dia': 10}, {'z': 10, 'dia': 10}], 'z = 0')
+        bad([{'z': 0, 'dia': 10}, {'z': 10, 'dia': 10}, {'z': 5, 'dia': 10}], 'go up')
+        bad([{'z': 0, 'dia': 100}, {'z': 1, 'dia': 2}, {'z': 2, 'dia': 100}, {'z': 50, 'dia': 100}], 'dips through the axis')
+
+    def test_stations_and_curved(self):
+        spec = ps.load(STOOL)
+        self.assertTrue(ps.is_curved(spec)); self.assertTrue(ps.all_estimated(spec))
+        self.assertEqual([(z, d) for z, d, _ in ps.stations(spec)], [(0, 200), (65, 255), (190, 95), (330, 250), (420, 290)])
+        self.assertFalse(ps.is_curved(ps.load(BOTTLE)))
+        st = ps.stations({'body': {'type': 'turned', 'segments': [{'dia': 40, 'length': 40, 'bulge': 5}]}})
+        self.assertEqual([(z, d) for z, d, _ in st], [(0, 40), (20, 50), (40, 40)])
+
+    def test_stool_cli_drawing(self):
+        E = os.path.join(HERE, 'epure')
+        run = lambda *a: json.loads(subprocess.run([E, *a], check=True, capture_output=True, text=True).stdout)
+        with tempfile.TemporaryDirectory() as t:
+            b = run('photo', 'build', STOOL, '--out', os.path.join(t, 'model'))
+            self.assertEqual([round(v, 2) for v in b['size_mm']], [290.0, 290.0, 420.0])
+            self.assertEqual(run('make', b['step'], '--out', os.path.join(t, 'drw'))['audit_errors'], 0)
+            run('photo', 'mark', os.path.join(t, 'drw'), '--spec', STOOL)
+            k = run('photo', 'mark', os.path.join(t, 'drw'), '--spec', STOOL)
+            self.assertEqual(k['audit_errors'], 0); self.assertEqual(k['curves_note'], ps.CURVES_NOTE)
+            with open(os.path.join(t, 'drw', 'spec.json')) as f: sp = json.load(f)
+            ph = [d for d in sp['dims'] if d.get('photo')]
+            self.assertEqual(sorted(round(d['b'] * 2) for d in ph if d['axis'] == 'x'), [95, 200, 250, 255, 290])
+            self.assertEqual(sorted(round(d['b']) for d in ph if d['axis'] == 'z'), [65, 190, 330])
+            self.assertTrue(all('≈' in (d.get('text') or '') for d in sp['dims']))
+            self.assertEqual(sp['notes'][-3:], [ps.ESTIMATE_NOTE, ps.CURVES_NOTE, k['simplified_note']])
+
+
 class Estimates(unittest.TestCase):
     SPEC = {'units': 'mm', 'body': {'type': 'plate', 'length': {'value': 120, 'est': True}, 'width': 80, 'thickness': 10},
             'features': [{'type': 'hole_pattern', 'x': 10, 'y': 10, 'nx': 2, 'dx': 100, 'dia': {'value': 8.5, 'est': True}}]}
@@ -204,7 +340,7 @@ class Errors(unittest.TestCase):
         self.assertIn(msg, str(cm.exception))
 
     def test_messages(self):
-        self.bad({'body': {'type': 'casting'}}, 'out of scope')
+        self.bad({'body': {'type': 'casting'}}, 'envelope')
         self.bad({'body': {'type': 'sphere'}}, 'body.type must be')
         self.bad(plate([], thickness=None), 'missing "thickness"')
         self.bad(plate([{'type': 'hole', 'x': 1, 'y': 1}]), 'missing "dia"')
@@ -246,7 +382,7 @@ class EndToEnd(unittest.TestCase):
             bad = os.path.join(t, 'bad.json')
             with open(bad, 'w') as f: json.dump({'body': {'type': 'organic'}}, f)
             r = subprocess.run([E, 'photo', 'build', bad, '--out', os.path.join(t, 'x')], capture_output=True, text=True)
-            self.assertEqual(r.returncode, 2); self.assertIn('out of scope', json.loads(r.stdout)['error'])
+            self.assertEqual(r.returncode, 2); self.assertIn('envelope', json.loads(r.stdout)['error'])
 
 
 if __name__ == '__main__':

@@ -1,0 +1,16 @@
+{
+ "units": "mm",
+ "name": "HOURGLASS STOOL",
+ "source": "photos with a US penny on the floor (penny ~30 px, top rim ~455 px across); every size scaled from the penny, none measured yet. Two stacked pieces drawn as one solid; the waist is a crease.",
+ "simplified": "WOOD GRAIN NOT SHOWN, TWO PIECES SHOWN AS ONE",
+ "body": {"type": "revolve", "smooth": true, "profile": [
+  {"z": 0, "dia": {"value": 200, "est": true}},
+  {"z": {"value": 65, "est": true}, "dia": {"value": 255, "est": true}},
+  {"z": {"value": 190, "est": true}, "dia": {"value": 95, "est": true}, "corner": true},
+  {"z": {"value": 330, "est": true}, "dia": {"value": 250, "est": true}},
+  {"z": {"value": 420, "est": true}, "dia": {"value": 290, "est": true}}
+ ]},
+ "features": [
+  {"type": "fillet", "at": "start", "radius": {"value": 8, "est": true}}
+ ]
+}

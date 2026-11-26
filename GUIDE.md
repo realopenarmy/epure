@@ -8,6 +8,7 @@ How Épure turns a 3D CAD file into a dimensioned shop drawing, what you can ask
 - [Getting started](#getting-started)
 - [A typical part job](#a-typical-part-job)
 - [From photos instead of a CAD file](#from-photos-instead-of-a-cad-file)
+  - [Simplified models](#simplified-models)
 - [Dimensions, threads, and GD&T](#dimensions-threads-and-gdt)
   - [Threads](#threads)
   - [GD&T](#gdt)
@@ -95,7 +96,23 @@ No CAD file? Send 3 to 5 clear photos of the part instead: one straight-on shot 
 
 *A shelf bracket from photo mode. The slot width was estimated from a coin in the photo, so it is marked ≈ until it is measured.*
 
-Photo mode handles plates, blocks, L-brackets (including a formed bend), shafts, pins, and bushings, with holes, counterbores, countersinks, slots, pockets, steps, grooves, fillets, and chamfers. Freeform or organic shapes, castings, forgings, molded parts, and gears are out of scope. For those, Épure will ask for a CAD model or a 3D scan.
+Photo mode handles plates, blocks, L-brackets (including a formed bend), and round parts such as shafts, pins, bushings, bottles, knobs, caps, vases and stools. It covers holes, counterbores, countersinks, slots, pockets, steps, tapers, curved sides, rounded shoulders, grooves, fillets, and chamfers, plus a flat tab with a hole for a keyring loop.
+
+### Simplified models
+
+If the part is basically round or boxy but has decorative details, such as lettering, a logo, ribs, knurling or a texture, Épure offers a simplified model instead of refusing. It tells you in one line what it will leave out, models the main form at the sizes you give, and adds a note to the drawing, for example "SIMPLIFIED FROM PHOTOS - LETTERING, LOGO AND RIBS NOT SHOWN". A small loop can become a simple tab with a hole if you want it.
+
+![Shop drawing of a small keychain bottle modeled from photos: round body, rounded shoulder, neck band, cap and a keyring tab, with every size marked ≈ and a note that lettering, logo and ribs are not shown.](docs/photo_bottle.png)
+
+*A keychain bottle from four photos with a penny beside it. Every size was scaled from the penny, so every dimension is marked ≈.*
+
+Curved sides are fine too. Give your best guesses for the diameters at the ends, the widest and narrowest points, and how high each one is, and Épure draws a smooth curve through them. Each of those sizes is marked ≈, the drawing dimensions them at those heights, and a note says "CURVES ESTIMATED FROM PHOTOS - PROFILE APPROXIMATE".
+
+![Shop drawing of an hourglass wooden stool modeled from photos: a curved upper bowl on a lower dome, with diameters dimensioned at the base, the widest point, the waist and the top, all marked ≈.](docs/photo_stool.png)
+
+*An hourglass stool from photos with a penny on the floor. The curves pass through best-guess diameters at five heights, and every size is marked ≈.*
+
+For shapes with no round or boxy main form, such as a figurine, an organic sculpture, a complex casting or a gear, Épure first offers a drawing of the bounding box or cylinder with the overall sizes. For the real shape, it needs a STEP file or a 3D scan.
 
 ## Dimensions, threads, and GD&T
 
@@ -179,6 +196,8 @@ You do not need special commands. Say what you want in ordinary language. These 
 | Show 300 mm of the extrusion | Keeps more (or less) of a broken view’s length showing |
 | Here are photos of the part, no CAD file | Starts photo mode: lists the features, then asks for sizes |
 | That hole is 6.6, measured | Replaces an estimate with your size and clears its ≈ |
+| Just simplify it, skip the lettering | Models the main form only and notes what was left out |
+| Use the waist and both ends as best guesses | Builds a smooth curve through them, marked ≈ |
 | Feedback / report a problem | Drafts a problem report, shows it, and sends it only after you say yes |
 
 ## Feedback
@@ -223,7 +242,7 @@ These are the honest limits, so you know when to ask for a workaround or finish 
 - Compound-angle faces, chamfers on those edges, non-axis-aligned holes, and variable-radius fillets are not auto-dimensioned.
 - A part drawing uses that part’s own axes, so it may be oriented differently from how it sits in the assembly. Mesh files cannot be used as assemblies.
 - A dense part may need dimensions moved so leaders do not cross.
-- Photo mode builds only simple shapes from the sizes you give. Sizes scaled from an object in the photo are rough, often off by a few percent, and the shape is only as right as the photos and your answers.
+- Photo mode builds only simple shapes from the sizes you give, and leaves decorative details off. Sizes scaled from an object in the photo are rough, often off by a few percent, and the shape is only as right as the photos and your answers.
 
 ## File formats
 

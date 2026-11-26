@@ -25,6 +25,15 @@ $EP make samples/models/wedge.step       --config samples/defaults.json --out sa
 $EP photo build samples/photo_bracket.json --out samples/photo_bracket/model >/dev/null
 $EP make samples/photo_bracket/model/model.step --config samples/defaults.json --fields samples/photo_bracket_fields.json --out samples/photo_bracket/drawing >/dev/null
 $EP photo mark samples/photo_bracket/drawing --spec samples/photo_bracket.json >/dev/null
+# photo mode, simplified: a keychain bottle, every size estimated from a penny, lettering and ribs left out
+$EP photo build samples/photo_bottle.json --out samples/photo_bottle/model >/dev/null
+$EP make samples/photo_bottle/model/model.step --config samples/defaults.json --fields samples/photo_bottle_fields.json --out samples/photo_bottle/drawing >/dev/null
+$EP photo mark samples/photo_bottle/drawing --spec samples/photo_bottle.json >/dev/null
+# photo mode, curved: an hourglass stool, a smooth curve through best-guess diameters, iso view dropped
+$EP photo build samples/photo_stool.json --out samples/photo_stool/model >/dev/null
+$EP make samples/photo_stool/model/model.step --config samples/defaults.json --fields samples/photo_stool_fields.json --out samples/photo_stool/drawing >/dev/null
+$EP edit samples/photo_stool/drawing del-view iso >/dev/null
+$EP photo mark samples/photo_stool/drawing --spec samples/photo_stool.json >/dev/null
 # GD&T: suggestions are pending until confirmed; here every suggestion is accepted (the bot asks the user first)
 $EP make samples/models/plate.step --config samples/defaults.json --fields samples/plate.json --out samples/gdt_plate >/dev/null
 for g in G1 G2 G3 G4 G5; do $EP edit samples/gdt_plate accept-gdt $g >/dev/null; done      # datums A B C, flatness, position

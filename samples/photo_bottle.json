@@ -1,0 +1,19 @@
+{
+ "units": "mm",
+ "name": "MINI BOTTLE KEYCHAIN",
+ "source": "4 photos with a US penny (19.05 mm) on the counter next to it; every size scaled from the penny, none measured yet",
+ "simplified": "LETTERING, LOGO AND RIBS NOT SHOWN",
+ "body": {"type": "turned", "segments": [
+  {"dia": {"value": 31, "est": true}, "length": {"value": 48, "est": true}},
+  {"dia_start": {"value": 31, "est": true}, "dia_end": {"value": 23, "est": true}, "length": {"value": 12, "est": true}},
+  {"dia": {"value": 23, "est": true}, "length": {"value": 3, "est": true}},
+  {"dia": {"value": 19, "est": true}, "length": {"value": 10, "est": true}}
+ ]},
+ "features": [
+  {"type": "fillet", "at": "start", "radius": {"value": 2, "est": true}},
+  {"type": "fillet", "z": {"value": 48, "est": true}, "radius": {"value": 8, "est": true}},
+  {"type": "fillet", "at": "end", "radius": {"value": 3, "est": true}},
+  {"type": "tab", "at": "end", "width": {"value": 8, "est": true}, "thickness": {"value": 3, "est": true},
+   "height": {"value": 7, "est": true}, "hole_dia": {"value": 3, "est": true}}
+ ]
+}

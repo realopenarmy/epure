@@ -2,6 +2,17 @@
 
 Newest first. Each entry starts with the VERSION it ships in. The first line of each entry is what an installed bot tells its owner when it picks up that version, so keep it to one plain sentence.
 
+## 2026-11-26.4
+
+Photo mode now offers a simplified model for bottles, knobs, stools and other round or boxy parts with curves or decorative details, instead of refusing.
+
+- Lettering, logos, ribs, knurling and textures are left off, and the bot says so in one line first. The drawing gets a "SIMPLIFIED FROM PHOTOS - ..." note next to the ≈ note.
+- Turned parts can now have tapers (`dia_start` / `dia_end`), a rounded shoulder at any height (`fillet` with `z`) and a flat tab with a hole on an end, such as a keyring loop.
+- Curved round parts, such as an hourglass stool or a vase, get a smooth curve through your best-guess diameters and heights (`revolve` with `smooth`, or a `bulge` arc). The drawing dimensions those stations, marks them ≈ and adds "CURVES ESTIMATED FROM PHOTOS - PROFILE APPROXIMATE".
+- If you push back on a refusal, the bot offers the estimate-based model instead of refusing again.
+- For shapes with no round or boxy main form, such as a figurine or a complex casting, the bot first offers a drawing of the bounding box or cylinder, then explains that the real shape needs a STEP file or a 3D scan.
+- When every size is an estimate, every dimension on the drawing is marked ≈.
+
 ## 2026-11-26.3
 
 You can now send photos of a part instead of a CAD file: the bot lists what it sees, asks for the sizes, shows a model to confirm, and then draws it as usual.
