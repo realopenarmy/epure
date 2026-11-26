@@ -134,8 +134,19 @@ def _scale(shape, f):
     return BRepBuilderAPI_Transform(shape, t, True).Shape()
 
 
-def bbox(shape):
-    b = Bnd_Box(); b.SetGap(0); BRepBndLib.AddOptimal_s(shape, b, False, False)
+def mesh_deflection(shape):
+    b = Bnd_Box(); BRepBndLib.Add_s(shape, b, False); x0, y0, z0, x1, y1, z1 = b.Get()
+    return max(0.01, min(0.2, max(x1 - x0, y1 - y0, z1 - z0) / 5000))
+
+
+def bbox(shape, fast=False):
+    """fast: box of a fine mesh (seconds on big assemblies; exact AddOptimal can take minutes on helical threads)."""
+    b = Bnd_Box(); b.SetGap(0)
+    if fast:
+        BRepMesh_IncrementalMesh(shape, mesh_deflection(shape), False, 0.35, True)
+        BRepBndLib.Add_s(shape, b, True)
+    else:
+        BRepBndLib.AddOptimal_s(shape, b, False, False)
     x0, y0, z0, x1, y1, z1 = b.Get()
     return [x0, y0, z0], [x1, y1, z1]
 
@@ -493,7 +504,9 @@ def _compound_prims(comp, deflection):
     return out
 
 
-def hlr(shape, view, hidden=True, deflection=None):
+def hlr(shape, view, hidden=True, deflection=None, fast=False):
+    if fast and face_count(shape) > EXACT_HLR_MAX_FACES:
+        return hlr_poly(shape, view, hidden, deflection)
     N, X, _ = frame(view)
     if deflection is None:
         lo, hi = bbox(shape); deflection = max(1e-3, max(hi[i]-lo[i] for i in range(3)) / 2000)
@@ -505,6 +518,98 @@ def hlr(shape, view, hidden=True, deflection=None):
     hid = []
     if hidden:
         hid = _compound_prims(h.HCompound(), deflection) + _compound_prims(h.OutLineHCompound(), deflection)
+    return dict(visible=vis, hidden=_drop_covered(hid, vis))
+
+
+EXACT_HLR_MAX_FACES = 1500     # above this, exact HLR can take many minutes (threaded fasteners etc.) -> mesh-based HLR
+
+
+def face_count(shape):
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+    from OCP.TopExp import TopExp
+    m = TopTools_IndexedMapOfShape(); TopExp.MapShapes_s(shape, TopAbs_FACE, m)
+    return m.Extent()
+
+
+def _chain_segments(segs, tol):
+    """Join 2D segments that share endpoints (2-valent joints) into polylines, then drop near-collinear points (RDP)."""
+    q = lambda p: (round(p[0] * 1e5), round(p[1] * 1e5))
+    adj, used = {}, [False] * len(segs)
+    for i, (a, b) in enumerate(segs):
+        adj.setdefault(q(a), []).append(i); adj.setdefault(q(b), []).append(i)
+    def extend(end_pt):
+        pts = []
+        while True:
+            k = q(end_pt); nb = adj[k]
+            if len(nb) != 2: return pts
+            j = next((j for j in nb if not used[j]), None)
+            if j is None: return pts
+            used[j] = True; a, b = segs[j]
+            end_pt = b if q(a) == k else a
+            pts.append(end_pt)
+    out = []
+    for i, (a, b) in enumerate(segs):
+        if used[i]: continue
+        used[i] = True
+        fwd = extend(b); back = extend(a)
+        pts = list(reversed(back)) + [a, b] + fwd
+        out.append(_rdp(_dedupe(pts), tol))
+    return out
+
+
+def _dedupe(pts):
+    o = [pts[0]]
+    for p in pts[1:]:
+        if abs(p[0] - o[-1][0]) > 1e-9 or abs(p[1] - o[-1][1]) > 1e-9: o.append(p)
+    return o
+
+
+def _rdp(pts, tol):
+    if len(pts) < 3: return pts
+    keep = [False] * len(pts); keep[0] = keep[-1] = True
+    st = [(0, len(pts) - 1)]
+    while st:
+        i, j = st.pop()
+        a, b = pts[i], pts[j]; dx, dy = b[0] - a[0], b[1] - a[1]; L = math.hypot(dx, dy)
+        dm, k = -1, -1
+        for m in range(i + 1, j):
+            p = pts[m]
+            d = abs(dx * (a[1] - p[1]) - dy * (a[0] - p[0])) / L if L > 1e-12 else math.hypot(p[0] - a[0], p[1] - a[1])
+            if d > dm: dm, k = d, m
+        if dm > tol: keep[k] = True; st += [(i, k), (k, j)]
+    return [p for p, f in zip(pts, keep) if f]
+
+
+def _segs_of(comp):
+    out = []
+    if comp is None or comp.IsNull(): return out
+    exp = TopExp_Explorer(comp, TopAbs_EDGE)
+    while exp.More():
+        c = BRepAdaptor_Curve(TopoDS.Edge_s(exp.Current())); exp.Next()
+        a, b = c.Value(c.FirstParameter()), c.Value(c.LastParameter())
+        if a.Distance(b) > 1e-9: out.append(((a.X(), a.Y()), (b.X(), b.Y())))
+    return out
+
+
+def hlr_poly(shape, view, hidden=True, deflection=None):
+    """Mesh-based hidden-line removal: seconds instead of minutes on big assemblies; lines come back as polylines."""
+    from OCP.HLRBRep import HLRBRep_PolyAlgo, HLRBRep_PolyHLRToShape
+    N, X, _ = frame(view)
+    lo, hi = bbox(shape, fast=True); size = max(hi[i] - lo[i] for i in range(3))    # also meshes the shape
+    if deflection is None: deflection = max(1e-3, size / 2000)
+    algo = HLRBRep_PolyAlgo(shape)
+    algo.Projector(HLRAlgo_Projector(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(*N), gp_Dir(*X)))); algo.Update()
+    h = HLRBRep_PolyHLRToShape(); h.Update(algo)
+    def prims(*comps):
+        segs = []
+        for c in comps: segs += _segs_of(c)
+        out = []
+        for pl in _chain_segments(segs, deflection / 2):     # mesh slivers far below print size are dropped
+            if len(pl) < 2 or sum(math.dist(a, b) for a, b in zip(pl, pl[1:])) < deflection / 10: continue
+            out.append(dict(t='poly', p=[list(p) for p in pl]) if len(pl) > 2 else dict(t='line', p=[list(pl[0]), list(pl[-1])]))
+        return out
+    vis = prims(h.VCompound(), h.OutLineVCompound())
+    hid = prims(h.HCompound(), h.OutLineHCompound()) if hidden else []
     return dict(visible=vis, hidden=_drop_covered(hid, vis))
 
 

@@ -95,7 +95,8 @@ def view_geom(spec, d, v, cache):
         if v['type'] == 'section':
             g = geom.section(shape, v['axis'], v['at'])
         else:
-            g = geom.hlr(shape, v['type'], hidden=spec['hidden_lines'] and v['type'] != 'iso')
+            g = geom.hlr(shape, v['type'], hidden=spec['hidden_lines'] and v['type'] != 'iso',
+                         fast=spec.get('kind') in ('assembly', 'exploded'))
         g['bbox'] = geom.prims_bbox(g['visible'] + g['hidden'])
         cache[k] = g
         with open(os.path.join(d, 'geom_cache.json'), 'w') as f: json.dump(cache, f)
@@ -612,6 +613,28 @@ def _rect_perim(x0, y0, x1, y1):
     return P, at, param
 
 
+def _spread(items, gap, P):
+    """Spread perimeter params items[i][0] (sorted) so neighbours are >= gap apart, keeping their order and moving
+    them as little as possible (pool-adjacent-violators on t_i - i*gap, cut open at the widest empty stretch)."""
+    n = len(items)
+    if n < 2: return
+    ts = [it[0] for it in items]
+    gaps = [((ts[(i + 1) % n] - ts[i]) % P, i) for i in range(n)]
+    cut = max(gaps)[1] + 1                       # start right after the widest gap
+    order = [(cut + i) % n for i in range(n)]
+    base = ts[order[0]]
+    u = [(ts[j] - base) % P for j in order]      # unwrapped, non-decreasing
+    r = [u[i] - i * gap for i in range(n)]
+    blocks = []                                  # PAV: [sum, count]
+    for x in r:
+        blocks.append([x, 1])
+        while len(blocks) > 1 and blocks[-2][0] / blocks[-2][1] > blocks[-1][0] / blocks[-1][1]:
+            sm, c = blocks.pop(); blocks[-1][0] += sm; blocks[-1][1] += c
+    fit = []
+    for sm, c in blocks: fit += [sm / c] * c
+    for i, j in enumerate(order): items[j][0] = (base + fit[i] + i * gap) % P
+
+
 def draw_balloons(msp, spec, vinfo, s, k):
     """Item balloons around the view, in the same angular order as their anchors (so leaders don't cross)."""
     from ezdxf.enums import TextEntityAlignment as TA
@@ -638,16 +661,7 @@ def draw_balloons(msp, spec, vinfo, s, k):
             items.append([param(q), b, A])
         items.sort(key=lambda t_: t_[0])
         gap = min((2 * BALLOON_R + 2.5) * k, P / max(len(items), 1))
-        for _ in range(60):          # spread along the perimeter, keeping the order
-            moved = False
-            for i in range(len(items)):
-                j = (i + 1) % len(items)
-                if len(items) < 2: break
-                dt = (items[j][0] - items[i][0]) % P
-                if dt < gap - 1e-9:
-                    push = (gap - dt) / 2
-                    items[i][0] = (items[i][0] - push) % P; items[j][0] = (items[j][0] + push) % P; moved = True
-            if not moved: break
+        _spread(items, gap, P)
         for t_, b, A in items:
             C = at(t_)
             if b.get('dist'):
@@ -1904,7 +1918,7 @@ def build_assembly(a, choose_only=False):
                     'hardware': hw, 'hardware_reason': g['hardware'], 'drawing': bool(dr), 'size_mm': g['size'],
                     'component': cpath, 'part_dir': None, 'instances': [inst[i]['name'] for i in g['inst']],
                     'fields': {k_: v_ for k_, v_ in fi.items() if k_ in ('revision', 'notes', 'sheet', 'scale', 'tolerances', 'decimals')}})
-    lo, hi = geom.bbox(comp)
+    lo, hi = geom.bbox(comp, fast=True)
     import explode as X
     ex_on = bool(getattr(a, 'exploded', False) or cfg.get('exploded') or
                  (getattr(a, 'items', None) and load_json(a.items).get('exploded')))
@@ -1975,7 +1989,7 @@ def build_exploded(asm, adir):
                            'dir': X.dir_name(r['dir'], r['dist_scaled']), 'dist_mm': round(r['dist_scaled'], 2),
                            'rides_with_item': insts[r['nb']]['item'] if r.get('nb') is not None else None,
                            'why': r['why']})
-    lo, hi = geom.bbox(comp)
+    lo, hi = geom.bbox(comp, fast=True)
     es = {k_: asm[k_] for k_ in ('version', 'model_units', 'mesh', 'units', 'decimals', 'projection', 'sheet', 'scale',
                                  'sheet_family', 'tolerances', 'title', 'bom', 'config') if k_ in asm}
     es.update({'kind': 'exploded', 'model': mpath, 'hidden_lines': False, 'notes': ['SEE SHEET 1 FOR PARTS LIST'],

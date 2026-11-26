@@ -157,19 +157,22 @@ def compound(shapes):
     return c
 
 
-def anchor_points(inst, groups, comp_vis, view, comp=None):
+def anchor_points(inst, groups, comp_vis, view, comp=None, budget=2.0, max_edges=40):
     """For each item: a view (u, v) point in the middle of the longest stretch of one of its 3D edges that is really
-    visible - on a drawn line of the whole-assembly view AND with a clear ray to the viewer (nothing in front)."""
-    import geom
-    from OCP.TopExp import TopExp_Explorer
+    visible - on a drawn line of the whole-assembly view AND with a clear ray to the viewer (nothing in front).
+    Bounded: one instance per item (others only if it shows nothing), its `max_edges` longest edges (projected),
+    rays tested only against parts that can be in front, early stop on a good run, `budget` seconds per item."""
+    import geom, time
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedMapOfShape
     from OCP.TopAbs import TopAbs_EDGE
     from OCP.TopoDS import TopoDS
     from OCP.BRepAdaptor import BRepAdaptor_Curve
     from OCP.IntCurvesFace import IntCurvesFace_ShapeIntersector
     from OCP.gp import gp_Lin, gp_Pnt, gp_Dir
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
     N = geom.frame(view)[0]
-    comp = comp or compound([i['shape'] for i in inst])
-    ray = IntCurvesFace_ShapeIntersector(); ray.Load(comp, 1e-4)
     cell = 2.0
     segs = {}
     for p in comp_vis:
@@ -188,57 +191,92 @@ def anchor_points(inst, groups, comp_vis, view, comp=None):
     def on_line(q, tol=0.15):
         return any(dseg(q, a, b) < tol for a, b in segs.get((math.floor(q[0] / cell), math.floor(q[1] / cell)), []))
 
-    def clear(p3):
-        o = gp_Pnt(p3[0] + N[0] * 0.02, p3[1] + N[1] * 0.02, p3[2] + N[2] * 0.02)
-        ray.Perform(gp_Lin(o, gp_Dir(*N)), 0.0, 1e7)
-        return ray.NbPnt() == 0
-
-    from OCP.Bnd import Bnd_Box
-    from OCP.BRepBndLib import BRepBndLib
-    box2 = []
-    for ii, it in enumerate(inst):
+    box2, depth = [], []
+    for it in inst:
         bb = Bnd_Box(); BRepBndLib.Add_s(it['shape'], bb); x0, y0, z0, x1, y1, z1 = bb.Get()
-        pr = [geom.project((x, y, z), view) for x in (x0, x1) for y in (y0, y1) for z in (z0, z1)]
+        cs = [(x, y, z) for x in (x0, x1) for y in (y0, y1) for z in (z0, z1)]
+        pr = [geom.project(c, view) for c in cs]
         box2.append((min(q[0] for q in pr), min(q[1] for q in pr), max(q[0] for q in pr), max(q[1] for q in pr)))
+        dn = [sum(c[k] * N[k] for k in range(3)) for c in cs]; depth.append((min(dn), max(dn)))
+    rays = {}
+
+    def ray_of(jj):
+        if jj not in rays:
+            r = IntCurvesFace_ShapeIntersector(); r.Load(inst[jj]['shape'], 1e-4); rays[jj] = r
+        return rays[jj]
+
+    def clear(p3, q2):
+        d = sum(p3[k] * N[k] for k in range(3))
+        o = gp_Pnt(p3[0] + N[0] * 0.02, p3[1] + N[1] * 0.02, p3[2] + N[2] * 0.02); ln = gp_Lin(o, gp_Dir(*N))
+        for jj, b in enumerate(box2):      # only parts whose outline covers the point and that reach in front of it
+            if not (b[0] - 0.5 <= q2[0] <= b[2] + 0.5 and b[1] - 0.5 <= q2[1] <= b[3] + 0.5): continue
+            if depth[jj][1] < d + 0.01: continue
+            r = ray_of(jj); r.Perform(ln, 0.0, 1e7)
+            if r.NbPnt() > 0: return False
+        return True
+
     item_of = {ii: g['item'] for g in groups for ii in g['inst']}
 
     def crowded(q, item):     # inside another item's outline box -> a reader can't tell which part the dot is on
         return any(item_of.get(jj) != item and b[0] - 1 <= q[0] <= b[2] + 1 and b[1] - 1 <= q[1] <= b[3] + 1
                    for jj, b in enumerate(box2))
 
+    def runs(flags):
+        out, run, start = [], 0, 0
+        for j, f in enumerate(flags + [False]):
+            if f:
+                if run == 0: start = j
+                run += 1
+            else:
+                if run: out.append((run, start))
+                run = 0
+        return sorted(out, reverse=True)
+
+    n = 16; good = int(0.6 * (n + 1) + 0.999)
     out = {}
     for g in groups:
-        best = None
+        t_end = time.monotonic() + budget
+        best = fallback = None; done = False
         for ii in g['inst']:
-            ex = TopExp_Explorer(inst[ii]['shape'], TopAbs_EDGE)
-            while ex.More():
-                e = TopoDS.Edge_s(ex.Current()); ex.Next()
+            m = TopTools_IndexedMapOfShape(); TopExp.MapShapes_s(inst[ii]['shape'], TopAbs_EDGE, m)
+            edges = []
+            for k in range(1, m.Extent() + 1):
                 try:
-                    c = BRepAdaptor_Curve(e)
+                    c = BRepAdaptor_Curve(TopoDS.Edge_s(m.FindKey(k)))
                 except Exception:
                     continue
                 t0, t1 = c.FirstParameter(), c.LastParameter()
-                n = 16
                 P3 = []
                 for j in range(n + 1):
                     q = c.Value(t0 + (t1 - t0) * j / n); P3.append((q.X(), q.Y(), q.Z()))
                 P2 = [geom.project(q, view) for q in P3]
-                flags = [on_line(q2) and clear(q3) for q2, q3 in zip(P2, P3)]
-                run, start, br = 0, 0, (0, 0)
-                for j, f in enumerate(flags + [False]):
-                    if f:
-                        if run == 0: start = j
-                        run += 1
-                    else:
-                        if run > br[0]: br = (run, start)
-                        run = 0
-                if br[0] < 3: continue
-                L = sum(math.dist(a, b) for a, b in zip(P2[br[1]:br[1] + br[0]], P2[br[1] + 1:br[1] + br[0]]))
-                run_pts = P2[br[1]:br[1] + br[0]]; mid = br[0] // 2
+                edges.append((sum(math.dist(a, b) for a, b in zip(P2, P2[1:])), P3, P2))
+            edges.sort(key=lambda e: -e[0])
+            for _, P3, P2 in edges[:max_edges]:
+                if time.monotonic() > t_end: done = True; break
+                onl = [on_line(q2) for q2 in P2]
+                rs = [r for r in runs(onl) if r[0] >= 3]
+                if not rs: continue
+                if fallback is None or rs[0][0] > fallback[0]:
+                    fallback = (rs[0][0], P2[rs[0][1] + rs[0][0] // 2])
+                if best and sum(math.dist(a, b) for a, b in zip(P2[rs[0][1]:rs[0][1] + rs[0][0]],
+                                                                 P2[rs[0][1] + 1:rs[0][1] + rs[0][0]])) <= best[0]:
+                    continue        # even fully clear, this edge can't beat what we have
+                flags = list(onl)
+                for ln_, st in rs:
+                    for j in range(st, st + ln_): flags[j] = clear(P3[j], P2[j])
+                cr = runs(flags)
+                if not cr or cr[0][0] < 3: continue
+                run, start = cr[0]
+                L = sum(math.dist(a, b) for a, b in zip(P2[start:start + run], P2[start + 1:start + run]))
+                run_pts = P2[start:start + run]; mid = run // 2
                 order = sorted(range(1, len(run_pts) - 1) or [0], key=lambda j: abs(j - mid))
                 q = next((run_pts[j] for j in order if not crowded(run_pts[j], g['item'])), None)
                 score = L if q is not None else 0.2 * L
                 q = q or run_pts[mid]
                 if best is None or score > best[0]: best = (score, q)
-        if best: out[g['item']] = [best[1][0], best[1][1]]
+                if run >= good and score == L: done = True; break
+            if best or done: break
+        pick = best[1] if best else (fallback[1] if fallback and time.monotonic() > t_end else None)
+        if pick: out[g['item']] = [pick[0], pick[1]]
     return out
