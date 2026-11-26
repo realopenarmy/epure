@@ -21,6 +21,10 @@ $EP make samples/models/flange.step       --config samples/defaults.json --field
 $EP edit samples/flange_reject reject-thread H1 >/dev/null    # Ø8.5 are clearance holes, not M10 tap drill
 $EP make samples/models/csk_plate.step   --config samples/defaults.json --out samples/csk_plate >/dev/null
 $EP make samples/models/wedge.step       --config samples/defaults.json --out samples/wedge >/dev/null
+# photo mode: part spec -> STEP -> the normal make -> ≈ on the estimated slot width
+$EP photo build samples/photo_bracket.json --out samples/photo_bracket/model >/dev/null
+$EP make samples/photo_bracket/model/model.step --config samples/defaults.json --fields samples/photo_bracket_fields.json --out samples/photo_bracket/drawing >/dev/null
+$EP photo mark samples/photo_bracket/drawing --spec samples/photo_bracket.json >/dev/null
 # GD&T: suggestions are pending until confirmed; here every suggestion is accepted (the bot asks the user first)
 $EP make samples/models/plate.step --config samples/defaults.json --fields samples/plate.json --out samples/gdt_plate >/dev/null
 for g in G1 G2 G3 G4 G5; do $EP edit samples/gdt_plate accept-gdt $g >/dev/null; done      # datums A B C, flatness, position
@@ -52,7 +56,7 @@ $EP pdf samples/plate_edit >/dev/null
 for d in plate shaft bracket bracket_first_iges block plate_edit flange tapped_block fillet_plate csk_plate wedge gdt_plate flange_gdt; do $EP pdf samples/$d >/dev/null; done
 $PY - <<'PY'
 import ezdxf, glob, json
-for f in sorted(glob.glob('samples/*/drawing.dxf') + glob.glob('samples/*/assembly/drawing.dxf') + glob.glob('samples/*/exploded/drawing.dxf') + glob.glob('samples/*/parts/*/drawing.dxf')):
+for f in sorted(glob.glob('samples/*/drawing.dxf') + glob.glob('samples/*/drawing/drawing.dxf') + glob.glob('samples/*/assembly/drawing.dxf') + glob.glob('samples/*/exploded/drawing.dxf') + glob.glob('samples/*/parts/*/drawing.dxf')):
     doc = ezdxf.readfile(f); a = doc.audit()
     layers = sorted(l.dxf.name for l in doc.layers)
     print(f'{f}: audit errors={len(a.errors)} fixes={len(a.fixes)} entities={len(doc.modelspace())} layers={layers}')

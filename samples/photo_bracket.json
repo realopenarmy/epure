@@ -1,0 +1,11 @@
+{
+ "units": "mm",
+ "name": "SHELF BRACKET",
+ "source": "3 photos, a credit card on the base for scale; overall sizes measured with a tape, slot width estimated from the card",
+ "body": {"type": "l_bracket", "length": 80, "base": 50, "height": 60, "thickness": 5, "bend_radius": 5},
+ "features": [
+  {"type": "fillet", "edges": "vertical", "radius": 4},
+  {"type": "hole_pattern", "face": "base", "x": 20, "y": 32, "nx": 2, "dx": 40, "dia": 6.6},
+  {"type": "slot", "face": "upright", "x1": 30, "z1": 42, "x2": 50, "z2": 42, "width": {"value": 7, "est": true}}
+ ]
+}

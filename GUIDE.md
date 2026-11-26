@@ -7,6 +7,7 @@ How Épure turns a 3D CAD file into a dimensioned shop drawing, what you can ask
 - [What Épure does](#what-épure-does)
 - [Getting started](#getting-started)
 - [A typical part job](#a-typical-part-job)
+- [From photos instead of a CAD file](#from-photos-instead-of-a-cad-file)
 - [Dimensions, threads, and GD&T](#dimensions-threads-and-gdt)
   - [Threads](#threads)
   - [GD&T](#gdt)
@@ -25,13 +26,14 @@ How Épure turns a 3D CAD file into a dimensioned shop drawing, what you can ask
 **What you get**
 
 - A dimensioned shop drawing from your 3D model
+- A drawing from a few photos and your measurements, when you have no CAD file
 - An editable DXF plus a preview to review
 - Quick changes in plain language, in chat
 - A PDF once you approve the drawing
 
 **What it does not do**
 
-- It does not model or redesign parts
+- It does not redesign parts. From photos, it builds a simple model only from the sizes you give it
 - It does not quote, order, or send work to a shop
 - It does not run printers or give engineering sign-off
 - It never invents a dimension that is not in the model
@@ -74,6 +76,26 @@ Once that is done, send your first CAD file. A STEP file is the best starting po
 5. **Approve it and get the PDF.** When you say the drawing looks good, Épure sends a PDF and the final DXF.
 
 The DXF uses named layers (`VISIBLE`, `HIDDEN`, `CENTER`, `DIMENSIONS`, `GDT`, `TITLEBLOCK`, `NOTES`, `HATCH`), so you can turn them on and off in your CAD app. Measuring the geometry in AutoCAD, Fusion, LibreCAD, or similar should give real sizes in your chosen units.
+
+## From photos instead of a CAD file
+
+No CAD file? Send 3 to 5 clear photos of the part instead: one straight-on shot of each face with features, plus one angled shot of the whole part. Épure cannot watch videos, so if you send a clip it will ask for still photos or screenshots from it.
+
+1. **Épure lists what it sees.** It names the shape and each feature with the face it is on, for example "4 holes through the base, near the corners". Correct anything it got wrong.
+2. **It asks for the sizes, a few at a time.** Overall size comes first, then feature sizes and positions measured from the left, front, and bottom edges, then material and quantity. Tolerances are asked for only on the sizes you say matter.
+3. **Something of known size helps.** Put an object of known size flat next to the feature and take the shot straight on, and Épure can estimate sizes from it. A coin, a credit or ID card (85.60 x 53.98 mm), a ruler or tape, an AA battery (50.5 x 14.5 mm), a sheet of letter or A4 paper, or a bolt all work, or tell Épure the size of whatever you used. If it can't tell what the object is, it will ask. Estimates are always labeled as estimates, and Épure asks you to measure the ones that matter, such as hole spacing, fits, and anything with a tolerance.
+4. **You check the model.** Épure sends a shaded picture of the model it built and its overall size. Nothing is drawn until you say the shape is right.
+5. **You get the usual drawing.** After that, it is the same job as with a CAD file: preview, DXF, edits in chat, and a PDF when you approve. Any size you did not confirm shows ≈ in front of it, and a note says to verify those before machining.
+
+![Shaded picture of the shelf bracket model built from photos, with its overall size, sent to check the shape before drawing.](docs/photo_bracket_model.png)
+
+*The model check: Épure sends this before it draws anything.*
+
+![Shop drawing of an L-shaped shelf bracket built from photos, with the estimated slot width marked ≈ and a note to verify it.](docs/photo_bracket.png)
+
+*A shelf bracket from photo mode. The slot width was estimated from a coin in the photo, so it is marked ≈ until it is measured.*
+
+Photo mode handles plates, blocks, L-brackets (including a formed bend), shafts, pins, and bushings, with holes, counterbores, countersinks, slots, pockets, steps, grooves, fillets, and chamfers. Freeform or organic shapes, castings, forgings, molded parts, and gears are out of scope. For those, Épure will ask for a CAD model or a 3D scan.
 
 ## Dimensions, threads, and GD&T
 
@@ -155,6 +177,8 @@ You do not need special commands. Say what you want in ordinary language. These 
 | Pull the shaft farther up on the explode | Adjusts the exploded-view distance or direction |
 | Don’t break the rail / Break the long view | Turns the broken view off or on |
 | Show 300 mm of the extrusion | Keeps more (or less) of a broken view’s length showing |
+| Here are photos of the part, no CAD file | Starts photo mode: lists the features, then asks for sizes |
+| That hole is 6.6, measured | Replaces an estimate with your size and clears its ≈ |
 | Feedback / report a problem | Drafts a problem report, shows it, and sends it only after you say yes |
 
 ## Feedback
@@ -199,6 +223,7 @@ These are the honest limits, so you know when to ask for a workaround or finish 
 - Compound-angle faces, chamfers on those edges, non-axis-aligned holes, and variable-radius fillets are not auto-dimensioned.
 - A part drawing uses that part’s own axes, so it may be oriented differently from how it sits in the assembly. Mesh files cannot be used as assemblies.
 - A dense part may need dimensions moved so leaders do not cross.
+- Photo mode builds only simple shapes from the sizes you give. Sizes scaled from an object in the photo are rough, often off by a few percent, and the shape is only as right as the photos and your answers.
 
 ## File formats
 

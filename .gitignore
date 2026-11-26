@@ -21,6 +21,7 @@ samples/flange_reject/
 samples/csk_plate/
 samples/wedge/
 samples/gdt_plate/
+samples/photo_bracket/
 
 # Showcase folders already in the tree. Ignore everything run_samples.sh adds
 # and keep the committed preview PNG and PDF files.

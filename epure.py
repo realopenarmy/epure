@@ -2813,6 +2813,9 @@ def pdf_one(d, out=None, quiet=False):
 
 
 def main():
+    if sys.argv[1:2] == ['photo']:     # photo mode: part spec -> STEP (photospec.py); the drawing step is unchanged
+        import photospec
+        return photospec.main(sys.argv[2:], sys.modules[__name__])
     ap = argparse.ArgumentParser(prog='epure')
     sp = ap.add_subparsers(dest='cmd', required=True)
     m = sp.add_parser('make'); m.add_argument('model'); m.add_argument('--config'); m.add_argument('--fields')
@@ -2827,6 +2830,7 @@ def main():
             m.add_argument('--items', help='items.json from assembly-scan, edited with the user\'s choices')
             m.add_argument('--exploded', action='store_true', help='also draw the exploded-view sheet (sheet 2)')
         m.set_defaults(fn=fn)
+    sp.add_parser('photo', help='photo mode: epure photo check|build|mark|scale ... (see README)')
     p = sp.add_parser('pdf'); p.add_argument('dir'); p.add_argument('--out'); p.set_defaults(fn=cmd_pdf)
     e = sp.add_parser('edit'); e.add_argument('dir'); es = e.add_subparsers(dest='op', required=True)
     x = es.add_parser('add-dim'); x.add_argument('--view', required=True); x.add_argument('--axis', required=True, choices=list('xyz'))

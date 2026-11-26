@@ -187,6 +187,44 @@ Every drawing has an ASME-style REVISIONS table at the top right (REV, DESCRIPTI
 - **Drawing:** frames are boxed on layer `GDT`, symbols drawn as lines (they show in any CAD font). Frames for holes hang under the hole callout, frames for bosses under the Ø dimension. Face datums and face frames sit on the face where it is seen edge-on (triangle + stem + boxed letter; frames with a leader arrow), outside the dimension stacks.
 - With any position frame, the hole location dims (and their bolt circle) are boxed as **basic**, and notes are added: `DIMENSIONING AND TOLERANCING PER ASME Y14.5-2018`, `BOXED DIMENSIONS ARE BASIC`.
 
+## Photo mode (part spec -> STEP)
+For a part the person has only photographed. The bot turns the photos and the person's answers into a small spec; `photospec.py` builds a CadQuery solid and writes STEP, and `make` draws it unchanged. Process rules are in PLAYBOOK.md section 15.
+```bash
+$E photo check spec.json                       # validate; lists open estimates; "ready_for_final": true when none
+$E photo build spec.json --out jobs/P/model    # -> model.step, model_preview.png (shaded iso), build.json
+$E make jobs/P/model/model.step --config person.json --fields part.json --out jobs/P/drawing
+$E photo mark jobs/P/drawing --spec spec.json  # ≈ on dims matching open estimates + verify note (or clears the note)
+$E photo scale --ref card_long --ref-px 856 --px 66   # estimate from a known object (or --ref-mm S); names in photospec.REFERENCES
+```
+Errors print `{"ok": false, "error": "..."}` with exit 2. JSON or YAML (`.yaml`/`.yml`). Any number may be `{"value": N, "est": true}` for an unconfirmed estimate (e.g. scaled from a coin); confirmed sizes are plain numbers.
+```json
+{"units": "mm", "name": "SHELF BRACKET",
+ "body": {"type": "l_bracket", "length": 80, "base": 50, "height": 60, "thickness": 5, "bend_radius": 5},
+ "features": [
+  {"type": "fillet", "edges": "vertical", "radius": 4},
+  {"type": "hole_pattern", "face": "base", "x": 20, "y": 32, "nx": 2, "dx": 40, "dia": 6.6},
+  {"type": "slot", "face": "upright", "x1": 30, "z1": 42, "x2": 50, "z2": 42, "width": {"value": 7, "est": true}}]}
+```
+Bodies (units `mm` or `in`; origin at the left-front-bottom corner, x left to right, y front to back, z up):
+- `plate` / `block`: `length` (x), `width` (y), `thickness` (z).
+- `l_bracket`: base `length` x `base` x `thickness` on z=0, upright wall `thickness` x `height` along the front edge (y=0); `bend_radius` (inside radius, optional) makes a formed bend, outside radius = bend_radius + thickness.
+- `turned`: `segments` [{`dia`, `length`}, ...] stacked along +z from z=0 (the start end).
+
+Prismatic features. `face`: top, bottom, front, back, left, right (plate/block; default top) or base, base_bottom, upright, upright_outside (bracket; default base). Positions use the face's two global axes (top/bottom: x,y; front/back and bracket upright: x,z; left/right: y,z). `depth` is a number or `"thru"` (default).
+| type | keys |
+|---|---|
+| `hole` | x/y/z position, `dia`, `depth`; optional `cbore_dia` + `cbore_depth`, or `csk_dia` (+ `csk_angle`, default 90) |
+| `hole_pattern` | first hole position, `n<axis>` counts and `d<axis>` pitch (e.g. `nx`, `dx`, `ny`, `dy`), plus the hole keys |
+| `bolt_circle` | `c<axis>` centre (e.g. `cx`, `cy`), `bc_dia`, `count`, `start_angle` (deg), plus the hole keys |
+| `slot` | centre-to-centre ends `x1 y1 x2 y2` (face axes), `width`, `depth`; must run along one face axis |
+| `pocket` | centre position, `length` and `width` (along the face's first and second axis), `depth`, `corner_radius` |
+| `step` | full-width rebate: `edge` (`+x`, `-x`, `+y`, ... in face axes), `size` (how far in), `depth` |
+| `fillet` / `chamfer` | `edges`: vertical (outer corners), top, bottom, all; `radius` / `size`. Applied to the plain body before cuts |
+
+Turned features: `bore` (`dia`, `depth` or `"thru"`, `from` start|end), `cross_hole` (`z`, `dia`, `direction` x|y, goes right through), `groove` (`z` start, `width`, `dia` at the bottom), `chamfer` / `fillet` (`at` start|end|both|steps, `size` / `radius`; at steps a chamfer breaks each shoulder's outer corner and a fillet rounds its inside corner).
+
+Body types `freeform`, `organic`, `casting`, `sculpted`, `molded`, `forging` (or `"out_of_scope": true`) are refused with an out-of-scope message. Features that split the part, an invalid solid, or a fillet too big for its wall are refused with a plain error. Tests: `venv/bin/python -m unittest discover -s tests -v`.
+
 ## JSON output (make / edit / render)
 `audit_errors`, `dim_errors`, `skipped` (callouts left off, with reason), `warnings` (feature + dim warnings, e.g. uneven hole circle), `thread_suggestions` (pending `text` lines for the user), `threads` (accepted), `gdt_suggestions` (pending, `G#: [frame] on target - reason`), `gdt` (accepted datums and frames), plus the feature lists (`holes cyls slots fillets chamfers bolt_circles slopes`).
 
