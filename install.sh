@@ -47,9 +47,14 @@ if [ "${EPURE_CJK_FONT:-1}" != "0" ] && ! has_cjk; then
 fi
 
 # 4. wrapper + smoke test
-cat > "$HERE/epure" <<WRAP
+# The committed wrapper is relocatable; only write one if it's missing, so a
+# git checkout stays clean and `git pull --ff-only` never trips over it.
+if [ ! -f "$HERE/epure" ]; then
+cat > "$HERE/epure" <<'WRAP'
 #!/usr/bin/env bash
-exec "$VENV/bin/python" "$HERE/epure.py" "\$@"
+HERE="$(cd "$(dirname "$0")" && pwd)"
+exec "$HERE/venv/bin/python" "$HERE/epure.py" "$@"
 WRAP
+fi
 chmod +x "$HERE/epure"
 "$VENV/bin/python" -c "import cadquery, OCP, ezdxf; print('epure ok: cadquery', cadquery.__version__, '| ezdxf', ezdxf.__version__)"
