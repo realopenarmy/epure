@@ -155,6 +155,15 @@ You do not need special commands. Say what you want in ordinary language. These 
 | Pull the shaft farther up on the explode | Adjusts the exploded-view distance or direction |
 | Don’t break the rail / Break the long view | Turns the broken view off or on |
 | Show 300 mm of the extrusion | Keeps more (or less) of a broken view’s length showing |
+| Feedback / report a problem | Drafts a problem report, shows it, and sends it only after you say yes |
+
+## Feedback
+
+If something looks wrong, say `feedback` or `report a problem`. Épure will draft a short report, show it to you, and send it to the person who publishes the bot only after you say yes.
+
+Leave out private chats, names, sheet links, files, and email addresses unless you mean to share them. You can add a handle or email if you want a reply.
+
+Copies installed before this guide's 2026-11-26.2 update need one reinstall before the bot will offer this, because the built-in safety rules have to allow it.
 
 ## Tips for clean drawings
 

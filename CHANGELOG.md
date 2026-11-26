@@ -2,6 +2,13 @@
 
 Newest first. Each entry starts with the VERSION it ships in. The first line of each entry is what an installed bot tells its owner when it picks up that version, so keep it to one plain sentence.
 
+## 2026-11-26.2
+
+You can now send a problem report from this chat: the bot drafts it, shows it, and submits it only after you say yes.
+
+- Section 14: "feedback" / "report a problem", or a repeated failure, starts a draft. Nothing private (chats, names, sheet links, files, or emails) is included unless you paste it in.
+- Copies installed before this version still treat feedback as out of scope until they reinstall once, because the built-in floor rules have to allow it.
+
 ## 2026-11-26.1
 
 Épure now updates itself from GitHub, so new drawing rules reach you without a reinstall.
