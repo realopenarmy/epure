@@ -122,6 +122,10 @@ In the same choose step, Épure asks if you also want an exploded-view sheet, wi
 
 When you approve an assembly job, you get a combined PDF of every sheet, plus one PDF per sheet. The usual order is the assembly, then the exploded view if you asked for one, then the part drawings.
 
+### Long, thin parts
+
+When a part or assembly is more than about 8 times longer than it is thick, such as a 2 m extrusion, Épure draws a broken view instead of shrinking everything to fit. A plain middle stretch is cut out and zigzag break lines mark the gap, so the scale can stay large enough to read the profile. The overall length is still dimensioned at its true value, underlined to show it is not to scale. A row of evenly spaced holes is dimensioned as a count and pitch, for example `13X 152.40 (=1981.20)`. The end view is always shown and dimensioned; if it is still small, Épure adds an enlarged detail of it. It may also pick a larger sheet when that clearly helps. You can ask to turn the break off, turn it on, or show more or less of the length.
+
 ## The revision table
 
 Every drawing has a revision table, and it starts with an initial release row. When you change a drawing that has already gone out, or you ask for a new revision, Épure asks for a short description of the change (required) and a revision letter (the default is the next letter). That updates the table and the REV in the title block.
@@ -149,6 +153,8 @@ You do not need special commands. Say what you want in ordinary language. These 
 | Don’t make a drawing for the bolts | Leaves hardware off the part-drawing set |
 | Move balloon 4 so it clears the shaft | Repositions that assembly balloon |
 | Pull the shaft farther up on the explode | Adjusts the exploded-view distance or direction |
+| Don’t break the rail / Break the long view | Turns the broken view off or on |
+| Show 300 mm of the extrusion | Keeps more (or less) of a broken view’s length showing |
 
 ## Tips for clean drawings
 
@@ -171,7 +177,9 @@ You do not need special commands. Say what you want in ordinary language. These 
 
 These are the honest limits, so you know when to ask for a workaround or finish a detail yourself in the DXF.
 
-- One sheet per part. Very large parts are scaled down, unless you ask for a larger sheet such as ANSI C or A2.
+- One sheet per part. Very large parts are scaled down, unless you ask for a larger sheet such as ANSI C or A2. Long, thin parts get a broken view instead.
+- A broken view is cut only where there are no features (or through a row of evenly spaced holes), and only along one axis. A part with features all along its length is not broken. Exploded sheets are usually not broken.
+- Names in Chinese, Japanese, or Korean print correctly when the CJK font from the installer is present. In the DXF they use a separate text style, so your CAD app needs a CJK font to show them.
 - An assembly sheet has no dimensions and no section views. Nested sub-assemblies are flattened into parts.
 - Exploded parts move only in straight X, Y, or Z lines, with no rotation. Parts are not checked for collisions after the move, so you may need to ask for a direction or distance change if something overlaps.
 - Sections are full sections on the X, Y, or Z planes only. There are no offset, half, aligned, or broken-out sections.

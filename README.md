@@ -1,35 +1,3 @@
-# Épure
-
-Épure is a headless Linux CLI that turns a STEP, IGES, BREP, or STL model into a dimensioned 2D shop drawing: an editable DXF, a PNG preview, and a PDF. It can edit that drawing, suggest threads and GD&T, and produce assembly sheets with a BOM, balloons, an exploded view, and a revision table. Geometry comes from CadQuery/OCP; DXF, PNG, and PDF come from ezdxf and matplotlib.
-
-## Quick start
-
-New here? Read the [user guide](GUIDE.md).
-
-```bash
-git clone https://github.com/realopenarmy/epure /workspace/epure && bash /workspace/epure/install.sh
-```
-
-`install.sh` is safe to re-run. It creates `venv/` beside itself and the `epure` wrapper. Both locate their own directory, so the same install works if you clone the repo somewhere other than `/workspace/epure`.
-
-```bash
-/workspace/epure/epure make /workspace/epure/samples/models/plate.step \
-  --config /workspace/epure/samples/defaults.json \
-  --fields /workspace/epure/samples/plate.json \
-  --out /workspace/epure/jobs/plate
-/workspace/epure/epure pdf /workspace/epure/jobs/plate
-```
-
-That writes `jobs/plate/drawing.dxf`, `preview.png`, and `drawing.pdf`.
-
-Committed showcase previews (regenerate the full set with `bash samples/run_samples.sh`):
-
-- [Plate after edits](samples/plate_edit/preview.png) · [PDF](samples/plate_edit/drawing.pdf)
-- [Flange with GD&T](samples/flange_gdt/preview.png) · [PDF](samples/flange_gdt/drawing.pdf)
-- [Shaft-support assembly](samples/shaft_support/assembly/preview.png) · [PDF](samples/shaft_support/assembly/drawing.pdf)
-- [Exploded view](samples/shaft_support/exploded/preview.png) · [PDF](samples/shaft_support/exploded/drawing.pdf)
-- [Combined set, 5 pages](samples/shaft_support/ep-5000-drawings.pdf)
-
 # Épure: 3D CAD model to 2D shop drawing
 
 Épure turns a 3D model into a dimensioned shop drawing. It writes an editable **DXF**, a **PNG preview**, and, once the drawing is approved, a **PDF**. Every drawing is driven by `spec.json`. To make a chat edit, the bot runs an `edit` op, which updates the spec and redraws everything in about 2–5 s.
@@ -41,7 +9,8 @@ It runs headless on the box with CadQuery/OCP (OpenCascade hidden-line removal) 
 bash /workspace/epure/install.sh      # idempotent; makes ./venv and the ./epure wrapper
 ```
 Pinned versions (Python 3.13.5, works on 3.10–3.13): `cadquery==2.8.0 cadquery-ocp==7.9.3.1.1 ezdxf==1.4.5 matplotlib==3.11.2 numpy==2.5.5 pillow==13.0.0 trimesh==5.2.2`.
-apt (only if missing): `fonts-dejavu-core fonts-liberation libgl1 libglu1-mesa libxrender1 poppler-utils python3-venv` (and `python3.X-venv` for the interpreter in use).
+apt (only if missing): `fonts-dejavu-core fonts-liberation libgl1 libglu1-mesa libxrender1 poppler-utils`.
+CJK font (step 3): if no CJK font is installed, install.sh tries `apt-get install fonts-noto-cjk`, else downloads `NotoSansCJKsc-Regular.otf` (~16 MB) into `./fonts/`. Skip it with `EPURE_CJK_FONT=0`; text then still draws, but CJK characters show as boxes.
 Run with `/workspace/epure/epure ...` (wrapper) or `/workspace/epure/venv/bin/python /workspace/epure/epure.py ...`.
 Do not put outputs in folders named build/dist/out/target (the box wipes them). Use e.g. `/workspace/epure/jobs/<part>/`.
 
@@ -108,6 +77,7 @@ Every command prints JSON: `ok, dxf, preview, preview_ids, sheet, scale, fits_sh
 | `set` | `key=value ...` | Title fields: `company logo part_name part_number revision material finish quantity drawn_by date`. Drawing: `sheet=A3\|ANSI_B\|auto`, `scale=1:2\|auto`, `projection=first\|third`, `units=in\|mm`, `decimals=3`, `hidden_lines=false`, `tolerances="X.X ±0.1;X.XX ±0.01"` |
 | `add-section` | `--axis x\|y\|z --at MM\|REF [--label A] [--parent V]` | Full section through an axis-aligned plane. Hatched (ANSI31). The cut line with arrows and letters is drawn on the parent view. y-sections look like the front view, x like the right view, z like the top view. |
 | `add-detail` | `--view V --at REF\|u,v --radius MM [--factor 2] [--label B]` | Enlarged circular detail. You can put a callout on it with `add-diameter --view B`. |
+| `break` | `[on\|off\|auto] [--keep N] [--axis x\|y\|z\|auto]` | Broken view for long, thin parts and assemblies (see "Broken views"). `auto` (default) breaks when length ÷ cross-section > 8. `--keep N` = length left showing, in drawing units (0 = auto; giving `--keep` alone turns the break on). Works on part, assembly and exploded sheets. |
 | `del-view` | `ID` | top/right/iso/section/detail (not front). Removes its dims. |
 | `add-view` | `top\|right\|iso` | |
 | `redim` | | Re-run auto-dimensioning. Keeps manual dims (ids renumbered). |
@@ -162,6 +132,8 @@ Feature coordinates are in `edit DIR list` under `features`. Auto dims use the b
   - **Slanted faces (P#):** a face tilted about one axis gets an angular dimension in the view where it is edge-on, measured from the nearest horizontal/vertical edge (or its extension line). The slope's start point gets a linear dim if it isn't already dimensioned, placed in the view where that point shows as an edge.
   - **GD&T (suggest, then confirm):** see below.
   - **Threads:** suggested from tap-drill sizes (metric coarse M2–M24, UNC/UNF #4–1") or found as text in the STEP file. Not drawn until `accept-thread`; then the callout reads `2X M8x1.25-6H x 13.50 DEEP / Ø6.80 DRILL x 18.00 DEEP` and a thin 3/4 circle shows the major diameter in the end view.
+- **Broken views (long, thin parts and assemblies):** when length ÷ cross-section > 8 (`break auto`), the main views are drawn as a standard broken view: a middle stretch with no features (or the repeats of an equal-pitch hole/pocket row) is cut out, zigzag break lines are drawn on both sides of the gap, and the scale is picked from the shortened length. Dimensions across the break keep the **true** value (DXF `dimlfac`) and the text is underlined (not to scale). Dims inside the cut are hidden; a cut hole row is dimensioned as `13X 152.40 (=1981.20)`. The end (cross-section) view is always shown and dimensioned; if it is under 30 mm on paper, an auto detail view (4:1, 5:1, ...) carries its dims. A larger sheet (A2 / ANSI C) is used when it at least doubles the scale. Sections and details are never broken. `spec.json → resolved.break` lists the axis, true/shown length, cut bands and hidden dims. Use `edit DIR break off|on|auto [--keep N]`.
+- **Non-Latin text:** text with characters Arial/DejaVu lack (e.g. `FAS-10345-00_預設`) uses text style `EPURE_CJK` (Noto Sans CJK) in the DXF and the same font in the PNG/PDF.
 - **Title block** (bottom right): company + logo, part name, part no., rev, material, finish, qty, units, drawn by, date, scale, size, sheet 1 of 1, tolerance block, and the projection symbol + words. The notes block is at the bottom left.
 
 ## Revision table
@@ -200,8 +172,9 @@ Every drawing has an ASME-style REVISIONS table at the top right (REV, DESCRIPTI
 - **Details:** clipped and redrawn as polylines, so arcs become polylines inside a detail.
 - **Mesh (STL/OBJ):** overall and face-level dims work, but holes aren't recognised (no callouts or centre marks), curved surfaces show facet edges, and values are only as good as the mesh. Always ask for STEP.
 - **Iso view:** sharp and silhouette edges only (no tangent edges).
-- **One sheet only.** Huge parts go to 1:N scale on B/A3 unless `sheet=ANSI_C|A2` is set.
-- **Rendering:** fonts render as DejaVu/Arial-substitute in PNG/PDF. DXF text uses style `EPURE` (arial.ttf), which CAD apps map to Arial.
+- **One sheet only.** Huge parts go to 1:N scale on B/A3 unless `sheet=ANSI_C|A2` is set. Long, thin parts get a broken view instead (see above).
+- **Broken views:** one axis only, at most 2 cuts. A cut is placed only where no feature is (or in an equal-pitch row), so a part with features all along its length is not broken. Extension lines of dims that end beyond the break can be drawn through the gap. Balloon leaders that land in a cut are moved to the cut edge. Exploded sheets usually don't break (the exploded parts make the outline less slender).
+- **Rendering:** fonts render as DejaVu/Arial-substitute in PNG/PDF. DXF text uses style `EPURE` (arial.ttf), which CAD apps map to Arial; text with CJK characters uses style `EPURE_CJK` (NotoSansCJK font file), which the CAD app needs installed (or maps to its own CJK font).
 - **Checking:** DXFs are validated with `ezdxf` audit (0 errors on all samples). They were not opened in AutoCAD or LibreCAD on the box.
 
 ## GD&T
@@ -228,7 +201,3 @@ Every drawing has an ASME-style REVISIONS table at the top right (REV, DESCRIPTI
 - `shaft_support/`: assembly (base plate, shaft, 2 identical brackets, 4 bolts + 4 nuts) made by `make_assembly.py`. `scan_preview.png` + `items.json` from the scan, `assembly/` sheet 1 with balloons, BOM and rev A, `exploded/` sheet 2 (auto explode), `parts/01..03` sheets 3-5, and `ep-5000-drawings.pdf` (5 pages).
 - `plate_edit/` also shows a second revision row (B).
 - `block/` has a counterbore, a blind side hole, and fillets. `plate_stl/` and `plate_obj/` are mesh inputs.
-
-## License
-
-Épure is MIT licensed. See [LICENSE](LICENSE).

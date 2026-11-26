@@ -1,6 +1,7 @@
 venv/
 jobs/
 people/
+fonts/
 __pycache__/
 *.pyc
 

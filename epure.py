@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Épure: 3D CAD model -> dimensioned 2D shop drawing (DXF + PNG preview + PDF).
-Run with the ./epure wrapper (it uses the venv next to this file). See README.md."""
+Run with /workspace/epure/venv/bin/python (or ./epure wrapper). See README.md."""
 import argparse, copy, datetime, hashlib, json, math, os, shutil, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -496,8 +496,14 @@ def ref_is_feature(ref):
 
 
 # ------------------------------------------------------------------ layout
+def _wlen(t):
+    """Text length in Latin character widths (CJK / full-width glyphs are about 1.6 wide)."""
+    import unicodedata
+    return sum(1.6 if ord(c) >= 0x1100 and unicodedata.east_asian_width(c) in 'WF' else 1 for c in t)
+
+
 def text_w(t):
-    return len(t) * TXT * 0.72
+    return _wlen(t) * TXT * 0.72
 
 
 def stacked_sides(spec, vid):
@@ -643,8 +649,8 @@ def draw_balloons(msp, spec, vinfo, s, k):
     for b in spec.get('balloons', []):
         if b.get('view') in vinfo and b.get('anchor'): byview.setdefault(b['view'], []).append(b)
     for vid, bs in byview.items():
-        vi = vinfo[vid]; bb = vi['b']
-        LL, UR = vi['T'](bb[0], bb[1]), vi['T'](bb[2], bb[3])
+        vi = vinfo[vid]; bb = vi.get('bm', vi['b'])
+        LL, UR = vi.get('Tm', vi['T'])(bb[0], bb[1]), vi.get('Tm', vi['T'])(bb[2], bb[3])
         c = ((LL[0]+UR[0])/2, (LL[1]+UR[1])/2)
         off = (BALLOON_OFF + BALLOON_R) * k
         x0, y0, x1, y1 = LL[0] - off, LL[1] - off, UR[0] + off, UR[1] + off
@@ -928,6 +934,8 @@ def layout(spec, gb, s, area=None):
         rows[r] = [max(rows[r][0], m['below']), max(rows[r][1], h), max(rows[r][2], m['above'])]
     if 'iso' in ids:   # iso uses its whole cell (incl. neighbours' dim margins); grow the cell only if needed
         c, r = cells['iso']; m = M['iso']; w, h = size['iso']
+        if spec.get('_brk') and (fac['iso'] != 1 or spec.get('kind') == 'exploded'):   # label under a slim iso: room for it
+            w = max(w, _wlen('ISOMETRIC VIEW  SCALE 1:100') * 3.0 * 0.62)
         exw = m['left'] + w + m['right'] - sum(cols[c]); exh = m['below'] + h + m['above'] - sum(rows[r])
         if exw > 0: cols[c][2 if third else 0] += exw
         if exh > 0: rows[r][2 if third else 0] += exh
@@ -1066,6 +1074,7 @@ def view_area(sheet):
 def choose(spec, gb):
     fam = spec.get('sheet_family') or ('ANSI' if spec['units'] == 'in' else 'ISO')
     sheets = [spec['sheet']] if spec['sheet'] not in (None, '', 'auto') else FAMILY[fam]
+    if spec.get('_brk') and len(sheets) > 1: sheets = sheets + [BIG_SHEET[fam]]     # long parts may need one size up
     fixed = parse_scale(spec['scale'])
     res = []
     for sh in sheets:
@@ -1096,6 +1105,14 @@ def choose(spec, gb):
         return sheets[-1], SCALES[-1], False, 1
     if fixed or len(sheets) == 1:
         return res[0]
+    if spec.get('_brk'):   # broken view: one size up only when the usual sheets would print it really small
+        fam_ = spec.get('sheet_family') or ('ANSI' if spec['units'] == 'in' else 'ISO')
+        ok = [r for r in res if r[2] and r[0] != BIG_SHEET[fam_]]
+        big = next((r for r in res if r[2] and r[0] == BIG_SHEET[fam_]), None)
+        pick = next((r for r in ok if r[1] >= 1), None) or (max(ok, key=lambda r: r[1]) if ok else None)
+        if pick and pick[1] >= res[0][1] / 2 and ok and pick is not ok[0] and ok[0][1] >= 0.5: pick = ok[0]
+        if big and (pick is None or (pick[1] < 0.2 and big[1] >= 2 * pick[1])): return big
+        if pick: return pick
     for r in res:          # smallest sheet that holds the part at full size or larger
         if r[1] >= 1: return r
     if len(res) > 1 and res[0][1] >= res[-1][1] / 2 and res[0][1] >= 0.5:
@@ -1118,10 +1135,118 @@ def new_doc(spec, k):
                                 ('HATCH', 7, 'CONTINUOUS', 13), ('GDT', 7, 'CONTINUOUS', 18)]:
         if name not in L: L.add(name, color=color, linetype=lt, lineweight=lw)
     doc.styles.add('EPURE', font='arial.ttf')
+    if font_info().get('fallback'): doc.styles.add('EPURE_CJK', font=font_info()['fallback'])
     return doc
 
 
 def render(spec, d, cache=None, ids_overlay=True):
+    """Draw the sheet. A broken view (long parts) works on render-time copies of the views and dims; the saved spec keeps
+    the user's own views and dims, plus spec['resolved']['break'] describing what was shortened."""
+    views0, dims0 = spec['views'], spec['dims']
+    spec['views'] = [dict(v) for v in views0]; spec['dims'] = [copy.deepcopy(dm) for dm in dims0]
+    try:
+        return _render(spec, d, cache, ids_overlay)
+    finally:
+        spec['views'], spec['dims'] = views0, dims0
+        spec.pop('_brk', None)
+        for dm in spec['dims']: dm.pop('_tag', None); dm.pop('_pos', None)
+        save_spec(d, spec)
+
+
+BIG_SHEET = {'ANSI': 'ANSI_C', 'ISO': 'A2'}
+
+
+def break_setup(spec, G, gb):
+    """Plan a broken view; clip/map the long views; hide dims that sit in the cut, add the hole-pattern dim, restack.
+    Returns {view id: ViewMap} for the views that are shortened (empty when the drawing stays whole)."""
+    import breaks as BK, geom
+    spec.pop('_brk', None)
+    brk = BK.plan(spec, G)
+    if not brk: return {}
+    VM = {}
+    for v in spec['views']:
+        if v['type'] not in MAIN: continue          # sections / details stay whole
+        vm = BK.ViewMap(brk, v['type'])
+        if not vm.on: continue
+        cuts = []
+        g = G[v['id']]
+        gc = dict(g); gc['visible'] = vm.clip(g['visible'], cuts); gc['hidden'] = vm.clip(g['hidden'], cuts)
+        vm.g2, vm.cuts = gc, cuts
+        gb[v['id']] = vm.mapped_bbox(gc['visible'] + gc['hidden'])
+        VM[v['id']] = vm
+    if not VM: return {}
+    ai = 'xyz'.index(brk['axis'])
+    allf = {f['id']: f for f in all_feats(spec)}
+    def f_in_band(fid):
+        f = allf.get(fid)
+        if not f: return False
+        pts = [f['c1'], f['c2']] if 'c1' in f else [f['apt']] if 'apt' in f else [f['center']]
+        if f.get('axis') == brk['axis'] and 'lo' in f: return BK.in_band(brk, f['lo']) and BK.in_band(brk, f['hi'])
+        return all(BK.in_band(brk, p_[ai]) for p_ in pts)
+    keep, hidden = [], []
+    for dm in spec['dims']:
+        vm = VM.get(dm['view']); hide = False
+        if vm:
+            if dm['kind'] == 'linear' and dm.get('axis') == brk['axis']:
+                try: hide = any(BK.in_band(brk, ref_value(spec, dm[r_], brk['axis'])) for r_ in ('a', 'b'))
+                except Exception: hide = False
+            elif dm['kind'] in ('hole', 'diameter', 'leader') and dm.get('feature'):
+                hide = all(f_in_band(x) for x in (dm.get('group') or [dm['feature']]))
+            elif dm['kind'] == 'angular': hide = vm.inband(*dm['E'])
+            elif dm['kind'] == 'text': hide = vm.inband(*dm['point'])
+        if hide: hidden.append(dm['id'])
+        else: keep.append(dm)
+    pat = brk.get('pattern')
+    if pat and spec.get('kind') not in ('assembly', 'exploded'):
+        hv = [dm for dm in spec['dims'] if dm['id'] in hidden and dm['kind'] == 'linear']
+        vid = max(set(dm['view'] for dm in hv), key=lambda x: sum(1 for dm in hv if dm['view'] == x)) if hv else next(iter(VM))
+        sides = [dm.get('side') for dm in hv if dm['view'] == vid]
+        sd0 = max(set(sides), key=sides.count) if sides else 'left'
+        side = {'left': 'right', 'right': 'left', 'above': 'below', 'below': 'above'}.get(sd0, 'right')
+        n = len(pat['ids'])
+        keep.append({'id': 'DP1', 'kind': 'linear', 'view': vid, 'axis': brk['axis'], 'a': pat['ids'][0], 'b': pat['ids'][-1],
+                     'side': side, 'offset': DIM_FIRST, 'auto': True, '_break': True,
+                     'text': f"{n - 1}X {fmt(spec, pat['pitch'])} (=<>)"})
+    for vid in VM:          # restack what is left on each side of the shortened views
+        for sd_ in ('left', 'right', 'above', 'below'):
+            ds = sorted([dm for dm in keep if dm['view'] == vid and dm['kind'] == 'linear' and dm.get('side') == sd_],
+                        key=lambda dm: dm.get('offset', DIM_FIRST))
+            for i, dm in enumerate(ds): dm['offset'] = DIM_FIRST + i * DIM_STEP
+    spec['dims'] = keep
+    brk['views'] = sorted(VM); brk['hidden_dims'] = hidden
+    spec['_brk'] = brk
+    return VM
+
+
+def end_view_detail(spec, G, gb, VM, s, d=None, cache=None):
+    """Parts: the cross-section (end) view must read. Add it if missing; if it is still small on paper, add a scaled-up
+    detail of it (render-time only) and move its dims there. Returns True when views changed."""
+    import geom
+    brk = spec.get('_brk')
+    if not brk or spec.get('kind') in ('assembly', 'exploded'): return False
+    et = {'x': 'right', 'y': 'front', 'z': 'top'}[brk['axis']]
+    ev = next((v for v in spec['views'] if v['type'] == et), None)
+    changed = False
+    if ev is None:
+        ev = {'id': et, 'type': et, '_auto': True}; spec['views'].append(ev); changed = True
+        G[et] = view_geom(spec, d, ev, cache if cache is not None else {}); gb[et] = G[et]['bbox']
+    b = gb.get(ev['id'])
+    if not b: return changed
+    ext = max(b[2] - b[0], b[3] - b[1])
+    if ext * s >= 30 or any(v['type'] == 'detail' and v.get('parent') == ev['id'] for v in spec['views']): return changed
+    fac = next((f for f in (2, 2.5, 4, 5, 8, 10, 20, 25, 50) if ext * s * f >= 45), 50)
+    lab = next(c for c in 'ABCDEFGHJKLMNPRSTUVWXYZ' if c not in [v['id'] for v in spec['views']])
+    dv = {'id': lab, 'type': 'detail', 'parent': ev['id'], 'center': [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2],
+          'radius': 0.5 * math.hypot(b[2] - b[0], b[3] - b[1]) * 1.12, 'factor': fac, '_auto': True}
+    spec['views'].append(dv)
+    G[lab] = detail_geom(G[ev['id']], dv); gb[lab] = G[lab]['bbox']
+    for dm in spec['dims']:
+        if dm['view'] == ev['id']: dm['view'] = lab
+    brk['end_detail'] = {'view': lab, 'parent': ev['id'], 'factor': fac}
+    return True
+
+
+def _render(spec, d, cache=None, ids_overlay=True):
     import ezdxf, geom
     from ezdxf.enums import TextEntityAlignment
     if cache is None:
@@ -1132,9 +1257,22 @@ def render(spec, d, cache=None, ids_overlay=True):
     if spec.get('kind') == 'assembly': refresh_bom(spec)
     if spec.get('kind') == 'exploded': sync_exploded(spec, d)
     gdt_prepare(spec, G)
+    VM = break_setup(spec, G, gb)
     sheet, s, fits, iso_f = choose(spec, gb)
+    if VM and end_view_detail(spec, G, gb, VM, s, d, cache):
+        for v in spec['views']:
+            if v['id'] not in G: G[v['id']] = view_geom(spec, d, v, cache); gb[v['id']] = G[v['id']]['bbox']
+        sheet, s, fits, iso_f = choose(spec, gb)
     spec['_iso_f'] = iso_f
     spec['resolved'] = {'sheet': sheet, 'scale': scale_str(s), 'fits': fits, 'iso_scale': scale_str(s*iso_f)}
+    if spec.get('_brk'):
+        b_ = spec['_brk']; U_ = uf(spec)
+        spec['resolved']['break'] = {
+            'axis': b_['axis'], 'true_length': round(b_['length'] / U_, 4), 'shown_length': round(b_['shown'] / U_, 4),
+            'cut': [[round(a_ / U_, 4), round(c_ / U_, 4)] for a_, c_ in b_['bands']], 'views': b_['views'],
+            'hidden_dims': b_['hidden_dims'], 'pattern': ({'holes': b_['pattern']['ids'], 'pitch': round(b_['pattern']['pitch'] / U_, 4)}
+                                                          if b_.get('pattern') else None),
+            'end_detail': b_.get('end_detail'), 'setting': spec.get('break') or {'on': 'auto'}}
     U = uf(spec)
     k = 1.0 / (s * U)              # paper mm -> drawing units
     pos, (W, H) = layout(spec, gb, s, view_area(sheet))
@@ -1154,18 +1292,26 @@ def render(spec, d, cache=None, ids_overlay=True):
 
     vinfo = {}
     for v in spec['views']:
-        vid = v['id']; g = G[vid]; b = g['bbox']
+        vid = v['id']; g = G[vid]; b = g['bbox']; bm = gb[vid]; vm = VM.get(vid)
         f = v.get('factor', 1) if v['type'] == 'detail' else iso_f if v['type'] == 'iso' else 1
         px, py = pos[vid]
-        def T(u, vv, px=px, py=py, b=b, f=f):
+        def Tm(u, vv, px=px, py=py, b=bm, f=f):       # already-mapped (shortened) view coords -> drawing
             return P(px + (u-b[0])*s*f, py + (vv-b[1])*s*f)
+        if vm:
+            def T(u, vv, Tm=Tm, vm=vm): return Tm(*vm.map(u, vv))
+        else:
+            T = Tm
         vv_ = dict(v)
         if v['type'] == 'detail':
             vv_['_pframe'] = view_frame_name(next(x for x in spec['views'] if x['id'] == v['parent']))
-        vinfo[vid] = dict(T=T, b=b, f=f, px=px, py=py, w=(b[2]-b[0])*s*f, h=(b[3]-b[1])*s*f, g=g, v=vv_)
+        vinfo[vid] = dict(T=T, Tm=Tm, vm=vm, b=b, bm=bm, f=f, px=px, py=py, w=(bm[2]-bm[0])*s*f, h=(bm[3]-bm[1])*s*f, g=g, v=vv_)
+        gd = vm.g2 if vm else g
         for kind, layer in (('hidden', 'HIDDEN'), ('visible', 'VISIBLE')):
-            for p in g[kind]:
+            for p in gd[kind]:
                 draw_prim(msp, p, T, layer, s*f*k)
+        if vm:              # long-break lines at both edges of every cut
+            for pl in vm.break_lines(vm.cuts, s*f):
+                msp.add_lwpolyline([Tm(*q) for q in pl], dxfattribs={'layer': 'VISIBLE', 'lineweight': 25})
         if g.get('hatch'):
             h = msp.add_hatch(dxfattribs={'layer': 'HATCH'})
             # ANSI31 line spacing is 0.125 drawing units; want ~2.5 mm paper
@@ -1237,6 +1383,7 @@ def render(spec, d, cache=None, ids_overlay=True):
                         circ = {'z': 'top', 'y': 'front', 'x': 'right'}[f['axis']]
                         if fv != circ or vi['v']['type'] == 'section': continue
                         u, vv = geom.project(f['center'], fv)
+                        if vi.get('vm') and vi['vm'].inband(u, vv): continue
                         add_text(msp, f['id'], vi['T'](u, vv), 2.0*k, 'EPURE_IDS', TextEntityAlignment.MIDDLE_CENTER, color=1)
             add_text(msp, f'[{vid}]', P(vi['px'], vi['py'] + vi['h'] + 2), 2.2*k, 'EPURE_IDS', TextEntityAlignment.BOTTOM_LEFT, color=5)
         write_png(doc, os.path.join(d, 'preview_ids.png'), PW*k, PH*k, PW, PH)
@@ -1267,8 +1414,50 @@ def write_png(doc, path, wd, hd, PW, PH, dpi=150):
     plt.close(fig)
 
 
+# ------------------------------------------------------------------ fonts: text the main font can't show (CJK...) uses a fallback
+FALLBACK_FONTS = ['NotoSansCJK-Regular.ttc', 'NotoSansCJKsc-Regular.otf', 'NotoSansCJKtc-Regular.otf', 'NotoSansCJKjp-Regular.otf',
+                  'NotoSansCJKkr-Regular.otf', 'NotoSansCJK-Regular.otf', 'SourceHanSans-Regular.ttc', 'wqy-microhei.ttc',
+                  'wqy-zenhei.ttc', 'DroidSansFallbackFull.ttf', 'NotoSansSC-Regular.otf', 'NotoSansTC-Regular.otf']
+_FONTS = {}
+
+
+def font_info():
+    """{'primary': codepoints of the main font, 'fallback': font file name, 'fallback_cmap': codepoints} (cached)."""
+    if 'primary' in _FONTS: return _FONTS
+    _FONTS['primary'] = None
+    try:
+        from pathlib import Path
+        from ezdxf.fonts import fonts
+        fm = fonts.font_manager
+        fdir = Path(HERE) / 'fonts'
+        local = []
+        if fdir.is_dir():          # fonts install.sh downloaded next to the code
+            fm.scan_folder(fdir)
+            local = sorted(p_.name for p_ in fdir.iterdir() if p_.suffix.lower() in ('.ttf', '.otf', '.ttc'))
+        def cmap(name):
+            try: return set(fm.get_ttf_font(name).getBestCmap())
+            except Exception: return set()
+        _FONTS['primary'] = cmap(fm.get_font_face('arial.ttf').filename)
+        for nm in local + FALLBACK_FONTS:
+            if fm.has_font(nm):
+                cm = cmap(nm)
+                if 0x4E00 in cm: _FONTS['fallback'], _FONTS['fallback_cmap'] = nm, cm; break
+    except Exception:
+        pass
+    return _FONTS
+
+
+def text_style(text, style='EPURE'):
+    if style != 'EPURE' or str(text).isascii(): return style
+    fi = font_info(); prim = fi.get('primary')
+    if not prim or not fi.get('fallback'): return style
+    miss = [c for c in str(text) if ord(c) not in prim and not c.isspace()]
+    if miss and all(ord(c) in fi['fallback_cmap'] for c in miss): return 'EPURE_CJK'
+    return style
+
+
 def add_text(msp, text, at, h, layer, align, color=None, style='EPURE'):
-    att = {'layer': layer, 'height': h, 'style': style}
+    att = {'layer': layer, 'height': h, 'style': text_style(text, style)}
     if color: att['color'] = color
     t = msp.add_text(text, dxfattribs=att); t.set_placement(at, align=align); return t
 
@@ -1330,9 +1519,11 @@ def draw_centers(msp, spec, vi, s, k):
     att = {'layer': 'CENTER'}
     F = spec['features']
     sect = v['type'] == 'section'
+    vm = vi.get('vm'); bax = (spec.get('_brk') or {}).get('axis')
     for f in F['holes'] + F['cyls']:
         u, vv = geom.project(f['center'], fv)
         r = f['dia']/2
+        if vm and f['axis'] != bax and vm.inband(u, vv): continue
         if sect:
             # only features the cutting plane passes through
             ai = AX[v['axis']]
@@ -1353,6 +1544,7 @@ def draw_centers(msp, spec, vi, s, k):
     for bc in F.get('bolt_circles', []):
         if bc['axis'] in (ua, va): continue
         u, vv = geom.project(bc['center'], fv)
+        if vm and vm.inband(u, vv): continue
         if v['type'] == 'detail' and math.dist((u, vv), v['center']) > v['radius'] + bc['dia']/2: continue
         if sect and not (bc['lo'] - 1e-6 <= v['at'] <= bc['hi'] + 1e-6) and v['axis'] == bc['axis']: continue
         msp.add_circle(vi['T'](u, vv), bc['dia']/2*s*vi['f']*k, dxfattribs=att)
@@ -1361,6 +1553,7 @@ def draw_centers(msp, spec, vi, s, k):
         msp.add_line(vi['T'](u, vv-e), vi['T'](u, vv+e), dxfattribs=att)
     for sl in F['slots']:
         if f_axis_in(sl, ua, va): continue
+        if vm and any(vm.inband(*geom.project(c_, fv)) for c_ in (sl['c1'], sl['c2'])): continue
         if v['type'] == 'detail' and math.dist(geom.project(sl['center'], fv), v['center']) > v['radius']: continue
         e = 2.0/(s*vi['f']); r = sl['width']/2
         for c in (sl['c1'], sl['c2']):
@@ -1431,6 +1624,12 @@ def draw_dim(msp, spec, dm, vi, s, k):
         over = {}
         if vi['f'] != 1: over['dimlfac'] = 1.0/vi['f']
         txt = (dm.get('text') or '<>').replace('%%c', 'Ø')
+        if vi.get('vm'):      # shortened view: report the true length, underlined (= not to scale) when it spans a cut
+            meas = abs(P2[0] - P1[0]) if horiz else abs(P2[1] - P1[1])
+            true_ = abs(vb_ - va_) / uf(spec)
+            if meas > 1e-9 and abs(true_ - meas / vi['f']) > 1e-6 * max(1.0, true_):
+                over['dimlfac'] = true_ / meas
+                if '<>' in txt: txt = txt.replace('<>', '\\L<>\\l')
         if dm.get('tol'): txt = txt + ' ' + dm['tol']
         dim = msp.add_linear_dim(base=base, p1=P1, p2=P2, angle=0 if horiz else 90, dimstyle='EPURE',
                                  text=txt, override=over or None, dxfattribs=att)
@@ -1499,6 +1698,7 @@ def callout_anchor(spec, dm, vi, s, k):
             for x in allf:
                 if x['id'] in dm['group']:
                     for c in pts_of(x):
+                        if vi.get('vm') and vi['vm'].inband(*geom.project(c, fv)): continue
                         cands.append((pick(geom.project(c, fv)), c, x))
             _, c3, f = min(cands, key=lambda t: t[0])
         else:
@@ -1639,7 +1839,7 @@ def draw_inside_dim(msp, spec, dm, vi, s, k, horiz, a, b):
 
 def fit_text(text, w, h):
     if not text: return h
-    return min(h, w / (len(text) * 0.62))
+    return min(h, w / (_wlen(text) * 0.62))
 
 
 def draw_sheet(msp, spec, sheet, s, k, d):
@@ -1991,7 +2191,7 @@ def build_exploded(asm, adir):
                            'why': r['why']})
     lo, hi = geom.bbox(comp, fast=True)
     es = {k_: asm[k_] for k_ in ('version', 'model_units', 'mesh', 'units', 'decimals', 'projection', 'sheet', 'scale',
-                                 'sheet_family', 'tolerances', 'title', 'bom', 'config') if k_ in asm}
+                                 'sheet_family', 'tolerances', 'title', 'bom', 'config', 'break') if k_ in asm}
     es.update({'kind': 'exploded', 'model': mpath, 'hidden_lines': False, 'notes': ['SEE SHEET 1 FOR PARTS LIST'],
                'views': [{'id': 'iso', 'type': 'iso'}], 'dims': [], 'warnings': [],
                'features': {'bbox': [lo, hi], 'holes': [], 'cyls': [], 'slots': [], 'fillets': [], 'chamfers': [], 'slopes': [],
@@ -2314,6 +2514,16 @@ def cmd_edit(a):
     elif op == 'add-view':
         if a.id not in ('top', 'right', 'iso'): sys.exit('add-view supports top, right, iso')
         if not any(v['id'] == a.id for v in spec['views']): spec['views'].append({'id': a.id, 'type': a.id})
+    elif op == 'break':
+        b_ = spec.setdefault('break', {'on': 'auto'})
+        if a.state: b_['on'] = {'on': True, 'off': False, 'auto': 'auto'}[a.state]
+        if a.keep is not None:
+            if a.keep <= 0: b_.pop('keep', None)
+            else:
+                b_['keep'] = a.keep * uf(spec)
+                if not a.state: b_['on'] = True
+        if a.axis: b_['axis'] = None if a.axis == 'auto' else a.axis
+        print('break', b_)
     elif op == 'redim':
         cache = json.load(open(os.path.join(d, 'geom_cache.json')))
         manual = [dm for dm in dims if not dm.get('auto')]
@@ -2515,7 +2725,7 @@ def cmd_edit(a):
     spec = render(spec, d)
     if is_asm:
         if ex.get('on'):
-            if op in EXPLODE_OPS or not os.path.exists(os.path.join(_edir(d), 'spec.json')) or op == 'bom-set':
+            if op in EXPLODE_OPS or not os.path.exists(os.path.join(_edir(d), 'spec.json')) or op in ('bom-set', 'break'):
                 build_exploded(spec, d)
             else:
                 render(read_spec(_edir(d)), _edir(d))
@@ -2670,6 +2880,10 @@ def main():
         if nm == 'move-balloon':
             x.add_argument('--angle', type=float, help='direction from the view centre, degrees (0 = right, 90 = up)')
             x.add_argument('--dist', type=float, help='extra distance out, paper mm'); x.add_argument('--reset', action='store_true')
+    x = es.add_parser('break', help='broken view for long parts: on|off|auto, --keep shown length, --axis')
+    x.add_argument('state', nargs='?', choices=['on', 'off', 'auto'])
+    x.add_argument('--keep', type=float, help='length to show along the long axis, drawing units (0 = automatic)')
+    x.add_argument('--axis', choices=['x', 'y', 'z', 'auto'])
     es.add_parser('redim'); es.add_parser('list')
     e.set_defaults(fn=cmd_edit)
     a = ap.parse_args(); a.fn(a)
